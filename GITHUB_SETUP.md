@@ -18,11 +18,11 @@ After creating the repository on GitHub, you'll see instructions. Run these comm
 ```bash
 cd /Users/tdu/Documents/GitHub/AtlasVLA
 
-# Add the remote repository (replace YOUR_USERNAME with your GitHub username)
-git remote add origin https://github.com/YOUR_USERNAME/AtlasVLA.git
+# Add the remote repository
+git remote add origin https://github.com/Tingting-Olivia-Du/AtlasVLA.git
 
 # Or if you prefer SSH:
-# git remote add origin git@github.com:YOUR_USERNAME/AtlasVLA.git
+# git remote add origin git@github.com:Tingting-Olivia-Du/AtlasVLA.git
 
 # Rename branch to main (if needed)
 git branch -M main
@@ -66,13 +66,36 @@ You can add badges to your README.md. Here's an example:
 
 ### VGGT Submodule
 
-If `vggt/` is a git submodule from the original VGGT repository:
+⚠️ **Important**: Your `vggt/` directory appears to be a git repository. You have two options:
+
+#### Option 1: Add as Git Submodule (Recommended)
+
+This keeps vggt linked to the original VGGT repository and allows easy updates:
 
 ```bash
-# If vggt is a submodule, add it properly:
+# Remove the existing vggt directory (backup first if needed)
+# Then add as submodule:
 git submodule add https://github.com/facebookresearch/vggt.git vggt
 git commit -m "Add VGGT as submodule"
 ```
+
+**To clone a repository with submodules later:**
+```bash
+git clone --recurse-submodules https://github.com/Tingting-Olivia-Du/AtlasVLA.git
+```
+
+#### Option 2: Include VGGT Code Directly
+
+If you want to include vggt code directly in your repository:
+
+```bash
+# Remove .git from vggt
+rm -rf vggt/.git
+git add vggt/
+git commit -m "Add VGGT code"
+```
+
+⚠️ **Note**: Make sure you comply with VGGT's license terms (see `vggt/LICENSE.txt`).
 
 ### Large Files
 
@@ -109,7 +132,7 @@ If you get authentication errors:
 ```bash
 # For HTTPS, use a personal access token
 # Or switch to SSH:
-git remote set-url origin git@github.com:YOUR_USERNAME/AtlasVLA.git
+git remote set-url origin git@github.com:Tingting-Olivia-Du/AtlasVLA.git
 ```
 
 ### Push Rejected

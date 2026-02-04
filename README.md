@@ -31,7 +31,7 @@ AtlasVLA integrates 3D geometric understanding from VGGT with language instructi
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/AtlasVLA.git
+git clone https://github.com/Tingting-Olivia-Du/AtlasVLA.git
 cd AtlasVLA
 
 # Install in development mode
@@ -199,7 +199,7 @@ If you use AtlasVLA in your research, please cite:
   title={AtlasVLA: Vision-Language-Action Model with 3D Geometric Understanding},
   author={Your Name},
   year={2025},
-  howpublished={\url{https://github.com/yourusername/AtlasVLA}}
+  howpublished={\url{https://github.com/Tingting-Olivia-Du/AtlasVLA}}
 }
 ```
 

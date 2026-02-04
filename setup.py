@@ -19,7 +19,7 @@ setup(
     description="Vision-Language-Action model based on VGGT for robot manipulation",
     author="Your Name",
     author_email="your.email@example.com",
-    url="https://github.com/yourusername/AtlasVLA",
+    url="https://github.com/Tingting-Olivia-Du/AtlasVLA",
     packages=find_packages(exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
     install_requires=read_requirements(),
     python_requires=">=3.8",

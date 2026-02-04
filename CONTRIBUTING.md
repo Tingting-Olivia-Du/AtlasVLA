@@ -7,7 +7,7 @@ Thank you for your interest in contributing to AtlasVLA! This document provides 
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/your-username/AtlasVLA.git
+   git clone https://github.com/Tingting-Olivia-Du/AtlasVLA.git
    cd AtlasVLA
    ```
 3. **Install in development mode**:

@@ -4,7 +4,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/AtlasVLA.git
+git clone https://github.com/Tingting-Olivia-Du/AtlasVLA.git
 cd AtlasVLA
 
 # Install in development mode (recommended)
