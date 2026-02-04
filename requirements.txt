@@ -1,0 +1,24 @@
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.30.0
+numpy>=1.24.0
+einops>=0.6.0
+
+# Data processing
+pandas>=2.0.0
+pillow>=9.0.0
+
+# Configuration
+pyyaml>=6.0
+
+# Utilities
+tqdm>=4.65.0
+
+# Optional: Experiment tracking
+# wandb>=0.15.0
+
+# Optional: Development tools
+# pytest>=7.0.0
+# black>=23.0.0
+# flake8>=6.0.0

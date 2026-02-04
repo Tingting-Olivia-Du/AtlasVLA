@@ -1,0 +1,56 @@
+# Training configuration for Atlas VLA
+
+# Model configuration
+model:
+  vggt_checkpoint: "facebook/VGGT-1B"
+  lang_encoder_name: "meta-llama/Llama-2-7b-hf"
+  freeze_vggt: true
+  freeze_lang_encoder: false
+  geom_output_dim: 512
+  fusion_hidden_dim: 1024
+  action_dim: 7
+  use_pointnet: true
+  use_pose: true
+
+# Data configuration
+data:
+  data_dir: "/path/to/libero/data"  # Update this path
+  train_split: "train"
+  val_split: "val"
+  image_size: 518  # VGGT input size
+  use_wrist_camera: true
+  batch_size: 8
+  num_workers: 4
+
+# Training configuration
+training:
+  num_epochs: 50
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  
+  # Loss weights
+  loss:
+    pose_weight: 1.0
+    gripper_weight: 0.5
+    pose_loss_type: "smooth_l1"  # "l1", "l2", or "smooth_l1"
+    gripper_loss_type: "l1"  # "l1" or "bce"
+  
+  # Logging intervals
+  log_interval: 100
+  val_interval: 1000
+  save_interval: 5000
+
+# Checkpointing
+checkpoint:
+  save_dir: "./checkpoints"
+  resume_from: null  # Path to checkpoint to resume from
+
+# Experiment tracking
+wandb:
+  enabled: false
+  project: "atlas-vla"
+  entity: null  # Your wandb entity/username
+
+# Device
+device: "cuda"
