@@ -5,7 +5,7 @@
 ### 1. Clone and Install
 
 ```bash
-# Clone the repository
+# Clone the repository (VGGT code is included directly)
 git clone https://github.com/Tingting-Olivia-Du/AtlasVLA.git
 cd AtlasVLA
 
