@@ -87,9 +87,11 @@ Thumbs.db
 .cache/
 huggingface/
 
-# VGGT specific (if needed)
+# VGGT (now part of the project)
 vggt/__pycache__/
+vggt/**/__pycache__/
 vggt/*.pyc
+vggt/**/*.pyc
 
 # Atlas specific
 atlas/__pycache__/

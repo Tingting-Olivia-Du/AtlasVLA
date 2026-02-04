@@ -47,35 +47,11 @@ git branch -M main
 git push -u origin main
 ```
 
-### 步骤 3: 处理 VGGT 子模块
+### 步骤 3: VGGT 已包含在项目中
 
-由于 `vggt/` 是一个独立的 git 仓库，你有两个选择：
+`vggt/` 代码已经直接包含在项目中，不需要额外的子模块设置。
 
-#### 选项 1: 作为 Git Submodule（推荐）
-
-这样可以保持与原始 VGGT 仓库的链接：
-
-```bash
-# 如果 vggt 还没有作为 submodule 添加
-git rm --cached vggt  # 如果已经在暂存区
-git submodule add https://github.com/facebookresearch/vggt.git vggt
-git commit -m "Add VGGT as submodule"
-git push
-```
-
-#### 选项 2: 直接包含代码
-
-如果你想直接包含 vggt 的代码：
-
-```bash
-# 移除 vggt 的 .git 目录
-rm -rf vggt/.git
-git add vggt/
-git commit -m "Add VGGT code directly"
-git push
-```
-
-⚠️ **注意**: 确保遵守 VGGT 的许可证条款。
+⚠️ **注意**: 确保遵守 VGGT 的许可证条款（见 `vggt/LICENSE.txt`）。
 
 ### 步骤 4: 验证
 

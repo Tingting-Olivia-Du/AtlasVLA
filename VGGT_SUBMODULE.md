@@ -1,25 +1,20 @@
-# VGGT Submodule
+# VGGT Integration
 
-If vggt/ is from the original VGGT repository, you have two options:
+VGGT code is included directly in this repository as part of the AtlasVLA project.
 
-## Option 1: Add as Git Submodule (Recommended)
+## License Compliance
 
-This keeps vggt linked to the original repository:
+⚠️ **Important**: This project includes VGGT code directly. Please ensure you comply with VGGT's license terms (see `vggt/LICENSE.txt`).
 
-```bash
-git submodule add https://github.com/facebookresearch/vggt.git vggt
-git commit -m "Add VGGT as submodule"
-```
+## Updating VGGT
 
-## Option 2: Include VGGT Code Directly
+If you need to update VGGT code:
 
-If you want to include vggt code directly in your repository:
+1. Check the original repository: https://github.com/facebookresearch/vggt
+2. Manually update the files in `vggt/` directory
+3. Commit the changes
 
-```bash
-# Remove .git from vggt if it exists
-rm -rf vggt/.git
-git add vggt/
-git commit -m "Add VGGT code"
-```
+## Attribution
 
-⚠️ **Note**: Make sure you comply with VGGT's license terms.
+VGGT is developed by Meta AI Research. Original repository:
+https://github.com/facebookresearch/vggt

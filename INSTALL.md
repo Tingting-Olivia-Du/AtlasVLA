@@ -32,8 +32,7 @@ pip install -e ".[dev]"     # For development tools
 # Install dependencies
 pip install -r requirements.txt
 
-# Install VGGT as a package (optional, for better import handling)
-pip install -e vggt/
+# Note: VGGT code is included directly in the repository, no separate installation needed
 
 # Add to Python path (if not using pip install)
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"

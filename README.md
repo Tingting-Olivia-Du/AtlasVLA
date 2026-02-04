@@ -37,6 +37,8 @@ cd AtlasVLA
 # Install in development mode
 pip install -e .
 
+# Note: VGGT code is included directly in this repository
+
 # Or install with optional dependencies
 pip install -e ".[wandb]"  # For wandb experiment tracking
 pip install -e ".[dev]"    # For development tools
