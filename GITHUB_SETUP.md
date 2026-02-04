@@ -64,38 +64,19 @@ You can add badges to your README.md. Here's an example:
 
 ## Important Notes
 
-### VGGT Submodule
+### VGGT Integration
 
-⚠️ **Important**: Your `vggt/` directory appears to be a git repository. You have two options:
-
-#### Option 1: Add as Git Submodule (Recommended)
-
-This keeps vggt linked to the original VGGT repository and allows easy updates:
-
-```bash
-# Remove the existing vggt directory (backup first if needed)
-# Then add as submodule:
-git submodule add https://github.com/facebookresearch/vggt.git vggt
-git commit -m "Add VGGT as submodule"
-```
-
-**To clone a repository with submodules later:**
-```bash
-git clone --recurse-submodules https://github.com/Tingting-Olivia-Du/AtlasVLA.git
-```
-
-#### Option 2: Include VGGT Code Directly
-
-If you want to include vggt code directly in your repository:
-
-```bash
-# Remove .git from vggt
-rm -rf vggt/.git
-git add vggt/
-git commit -m "Add VGGT code"
-```
+VGGT code is included directly in this repository as part of the AtlasVLA project. No submodule setup is needed.
 
 ⚠️ **Note**: Make sure you comply with VGGT's license terms (see `vggt/LICENSE.txt`).
+
+**To clone the repository:**
+```bash
+git clone https://github.com/Tingting-Olivia-Du/AtlasVLA.git
+cd AtlasVLA
+```
+
+No special submodule commands needed - VGGT code is already included!
 
 ### Large Files
 
