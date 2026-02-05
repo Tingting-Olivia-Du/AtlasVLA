@@ -60,9 +60,9 @@ datasets/
 *.pkl
 *.pickle
 
-# Model weights
-models/
-weights/
+# Model weights (only ignore root-level models/ and weights/ directories)
+/models/
+/weights/
 *.safetensors
 
 # Experiments
