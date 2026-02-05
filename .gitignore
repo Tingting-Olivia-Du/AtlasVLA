@@ -52,9 +52,9 @@ runs/
 wandb/
 tensorboard/
 
-# Data
-data/
-datasets/
+# Data (only ignore root-level data/ and datasets/ directories)
+/data/
+/datasets/
 *.h5
 *.hdf5
 *.pkl
