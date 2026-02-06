@@ -8,9 +8,15 @@ model:
   freeze_lang_encoder: true
   geom_output_dim: 512
   fusion_hidden_dim: 1024
-  action_dim: 7
+  action_dim: 7  # 7 for 欧拉角，8 for 四元数
   use_pointnet: true
   use_pose: true
+  # 改进3: 四元数表示选项
+  use_quaternion: false  # 是否使用四元数表示旋转（推荐true，避免欧拉角奇异性）
+  # 改进2: Diffusion Head选项
+  use_diffusion_head: false  # 是否使用Diffusion Action Head（默认false，使用传统回归head）
+  # 改进5: Fusion模块改进
+  use_attention_pooling: true  # 是否使用attention pooling（推荐true）
 
 # HuggingFace authentication
 huggingface:
@@ -39,13 +45,20 @@ data:
   use_wrist_camera: true
   batch_size: 8
   num_workers: 4
+  # 改进4: 多帧时序训练配置
+  num_temporal_frames: 1  # 时序帧数（1=单帧，2+=多帧时序）
+  temporal_stride: 1  # 帧之间的步长
+  # 改进1: 动作归一化配置
+  normalize_actions: false  # 是否归一化动作（推荐true，解决尺度差异问题）
+  action_stats_path: null  # 动作统计信息文件路径（null=自动计算）
 
 # Training configuration
 training:
   num_epochs: 50
-  learning_rate: 0.0001  # Base learning rate (will be scaled by num_gpus in distributed training)
-  weight_decay: 0.01
-  warmup_steps: 1000  # Number of steps for learning rate warmup
+  # 改进7: 超参数调整
+  learning_rate: 0.00005  # 降低学习率（从0.0001降到0.00005）以提高训练稳定性
+  weight_decay: 0.001  # 降低weight_decay（从0.01降到0.001）减少正则化强度
+  warmup_steps: 2000  # 增加warmup步数（从1000到2000）让学习率更平滑地增长
   gradient_accumulation_steps: 1  # Accumulate gradients over N steps before updating (simulates larger batch size)
   
   # Loss weights
@@ -54,6 +67,10 @@ training:
     gripper_weight: 0.5
     pose_loss_type: "smooth_l1"  # "l1", "l2", or "smooth_l1"
     gripper_loss_type: "l1"  # "l1" or "bce"
+    # 改进6: 辅助损失配置
+    use_auxiliary_loss: false  # 是否启用辅助损失（默认关闭，可根据需要开启）
+    geom_consistency_weight: 0.1  # 几何一致性损失权重
+    feature_reg_weight: 0.01  # 特征正则化损失权重
   
   # Logging intervals
   log_interval: 100

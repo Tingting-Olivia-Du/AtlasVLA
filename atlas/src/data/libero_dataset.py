@@ -12,6 +12,8 @@ import json
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
+from .action_normalizer import ActionNormalizer
+
 
 class LIBERODataset(Dataset):
     """
@@ -37,6 +39,12 @@ class LIBERODataset(Dataset):
         image_size: int = 518,
         use_wrist_camera: bool = True,
         transform=None,
+        # 改进4: 多帧时序训练支持
+        num_temporal_frames: int = 1,  # 时序帧数，1表示单帧（原始行为）
+        temporal_stride: int = 1,  # 帧之间的步长
+        # 改进1: 动作归一化支持
+        normalize_actions: bool = False,  # 是否归一化动作
+        action_stats_path: Optional[str] = None,  # 动作统计信息文件路径
     ):
         self.data_dir = data_dir
         self.split = split
@@ -44,10 +52,25 @@ class LIBERODataset(Dataset):
         self.use_wrist_camera = use_wrist_camera
         self.transform = transform
         
+        # 改进4: 多帧时序训练参数
+        self.num_temporal_frames = num_temporal_frames
+        self.temporal_stride = temporal_stride
+        
+        # 改进1: 动作归一化
+        self.normalize_actions = normalize_actions
+        if normalize_actions:
+            self.action_normalizer = ActionNormalizer(stats_path=action_stats_path)
+        else:
+            self.action_normalizer = None
+        
         # Load dataset metadata
         self.episodes = self._load_episodes()
         
         print(f"Loaded {len(self.episodes)} episodes from {split} split")
+        if num_temporal_frames > 1:
+            print(f"  使用多帧时序训练: {num_temporal_frames} 帧, stride={temporal_stride}")
+        if normalize_actions:
+            print(f"  动作归一化: 已启用")
         
     def _load_episodes(self) -> List[Dict]:
         """
@@ -118,10 +141,16 @@ class LIBERODataset(Dataset):
                     # Match images with actions
                     num_frames = len(workspace_images)
                     if num_frames > 0 and len(actions_df) >= num_frames:
-                        for i in range(num_frames):
+                        # 改进4: 支持多帧时序采样
+                        # 计算可以采样的起始帧范围（确保有足够的帧）
+                        max_start_idx = num_frames - (self.num_temporal_frames - 1) * self.temporal_stride
+                        max_start_idx = max(1, max_start_idx)  # 至少保留1个样本
+                        
+                        for i in range(max_start_idx):
                             episode_data = {
                                 "episode_path": episode_path,
                                 "frame_idx": i,
+                                "num_frames_in_episode": num_frames,  # 记录episode的总帧数
                                 "workspace_image": os.path.join(images_dir, workspace_images[i]) if i < len(workspace_images) else None,
                                 "wrist_image": os.path.join(images_dir, wrist_images[i]) if self.use_wrist_camera and i < len(wrist_images) else None,
                                 "action": actions_df.iloc[i].values[:7].astype(np.float32),  # 7-DOF action
@@ -146,49 +175,81 @@ class LIBERODataset(Dataset):
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
-        Get a single data sample
+        获取单个数据样本
+        
+        改进4: 支持多帧时序采样
+        改进1: 支持动作归一化
         
         Returns:
             dict containing:
-                - images: [S, 3, H, W] - Stacked images (workspace + wrist)
-                - action: [7] - 7-DOF action
-                - language_task: str - Language instruction
+                - images: [S*T, 3, H, W] - 堆叠的图像（S=相机数，T=时序帧数）
+                - action: [7] - 7-DOF动作（可能已归一化）
+                - language_task: str - 语言指令
         """
         episode = self.episodes[idx]
+        episode_path = episode["episode_path"]
+        start_frame_idx = episode["frame_idx"]
+        num_frames_in_episode = episode.get("num_frames_in_episode", 1)
         
-        # Load images
-        images = []
+        # 改进4: 加载多帧时序图像
+        all_images = []  # 存储所有时序帧的图像
         
-        # Workspace camera
-        if episode["workspace_image"] and os.path.exists(episode["workspace_image"]):
-            workspace_img = Image.open(episode["workspace_image"]).convert("RGB")
-            workspace_img = workspace_img.resize((self.image_size, self.image_size), Image.BICUBIC)
-            workspace_tensor = torch.from_numpy(np.array(workspace_img)).permute(2, 0, 1).float() / 255.0
-            images.append(workspace_tensor)
+        for t in range(self.num_temporal_frames):
+            # 计算当前帧的索引
+            frame_idx = min(start_frame_idx + t * self.temporal_stride, num_frames_in_episode - 1)
+            
+            # 构建图像路径
+            images_dir = os.path.join(episode_path, "images")
+            workspace_image_path = os.path.join(images_dir, f"workspace_{frame_idx:03d}.png")
+            wrist_image_path = os.path.join(images_dir, f"wrist_{frame_idx:03d}.png")
+            
+            # 加载当前帧的图像
+            frame_images = []
+            
+            # Workspace camera
+            if os.path.exists(workspace_image_path):
+                workspace_img = Image.open(workspace_image_path).convert("RGB")
+                workspace_img = workspace_img.resize((self.image_size, self.image_size), Image.BICUBIC)
+                workspace_tensor = torch.from_numpy(np.array(workspace_img)).permute(2, 0, 1).float() / 255.0
+                frame_images.append(workspace_tensor)
+            else:
+                # 创建dummy图像
+                frame_images.append(torch.zeros(3, self.image_size, self.image_size))
+            
+            # Wrist camera (optional)
+            if self.use_wrist_camera:
+                if os.path.exists(wrist_image_path):
+                    wrist_img = Image.open(wrist_image_path).convert("RGB")
+                    wrist_img = wrist_img.resize((self.image_size, self.image_size), Image.BICUBIC)
+                    wrist_tensor = torch.from_numpy(np.array(wrist_img)).permute(2, 0, 1).float() / 255.0
+                    frame_images.append(wrist_tensor)
+                else:
+                    frame_images.append(torch.zeros(3, self.image_size, self.image_size))
+            
+            # 堆叠当前帧的多个视角: [S, 3, H, W]
+            frame_stack = torch.stack(frame_images, dim=0)
+            all_images.append(frame_stack)
+        
+        # 堆叠所有时序帧: [T, S, 3, H, W] -> [T*S, 3, H, W]
+        if self.num_temporal_frames > 1:
+            images = torch.cat(all_images, dim=0)  # [T*S, 3, H, W]
         else:
-            # Create dummy image if missing
-            images.append(torch.zeros(3, self.image_size, self.image_size))
-            
-        # Wrist camera (optional)
-        if self.use_wrist_camera and episode["wrist_image"] and os.path.exists(episode["wrist_image"]):
-            wrist_img = Image.open(episode["wrist_image"]).convert("RGB")
-            wrist_img = wrist_img.resize((self.image_size, self.image_size), Image.BICUBIC)
-            wrist_tensor = torch.from_numpy(np.array(wrist_img)).permute(2, 0, 1).float() / 255.0
-            images.append(wrist_tensor)
-            
-        # Stack images: [S, 3, H, W]
-        images = torch.stack(images, dim=0)
+            images = all_images[0]  # [S, 3, H, W]
         
         # Apply transforms if provided
         if self.transform is not None:
             images = self.transform(images)
-            
-        # Load action
+        
+        # 加载动作
         action = torch.from_numpy(episode["action"]).float()
         
+        # 改进1: 动作归一化
+        if self.normalize_actions and self.action_normalizer is not None:
+            action = self.action_normalizer.normalize(action)
+        
         return {
-            "images": images,  # [S, 3, H, W]
-            "action": action,  # [7]
+            "images": images,  # [S或T*S, 3, H, W]
+            "action": action,  # [7] - 可能已归一化
             "pose": action[:6],  # [6] - 6-DOF pose
             "gripper": action[6:7],  # [1] - gripper
             "language_task": episode["language_task"],

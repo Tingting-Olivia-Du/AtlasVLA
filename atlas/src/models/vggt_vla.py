@@ -33,10 +33,10 @@ class VGGTVLA(nn.Module):
     
     Architecture:
     1. VGGT backbone: extracts 3D geometric information from images
-    2. Language encoder: processes language instructions (LLaMA 2 encoder)
-    3. Geometry encoder: extracts features from VGGT outputs
+    2. Language encoder: processes language instructions (LLaMA 3 encoder)
+    3. Geometry encoder: extracts features from VGGT outputs //真的需要这一步吗？
     4. Multimodal fusion: fuses language and geometry features
-    5. Action head: predicts robot actions
+    5. Action head: predicts robot actions //这个是怎样的一个结构？
     
     Args:
         vggt_model: Pre-trained VGGT model (optional, will load if None)
@@ -50,15 +50,15 @@ class VGGTVLA(nn.Module):
     
     def __init__(self, 
                  vggt_model=None,
-                 lang_encoder_name="meta-llama/Llama-2-7b-hf",
+                 lang_encoder_name="meta-llama/Meta-Llama-3-8B",
                  freeze_vggt=True,
                  freeze_lang_encoder=False,
-                 geom_output_dim=512,
-                 fusion_hidden_dim=1024,
-                 action_dim=7,
-                 use_pointnet=True,
-                 use_pose=True,
-                 hf_token=None,
+                 geom_output_dim=512, #VGGT的输出维度
+                 fusion_hidden_dim=1024, #融合模块的隐藏维度
+                 action_dim=7, #动作维度
+                 use_pointnet=True, #是否使用点云
+                 use_pose=True, #是否使用姿态
+                 hf_token=None, #HuggingFace token
                  **kwargs):
         super().__init__()
         
@@ -157,7 +157,7 @@ class VGGTVLA(nn.Module):
                 **load_kwargs
             )
             # Set pad token if not exists
-            if self.lang_tokenizer.pad_token is None:
+            if self.lang_tokenizer.pad_token is None: # 后面check 
                 self.lang_tokenizer.pad_token = self.lang_tokenizer.eos_token
                 logging.info("Set pad_token = eos_token")
             
@@ -243,7 +243,7 @@ class VGGTVLA(nn.Module):
         # 2. Extract geometry features
         geom_features = self.geom_encoder(
             aggregated_tokens_list=aggregated_tokens_list,
-            world_points=vggt_outputs.get("world_points"),
+            world_points=vggt_outputs.get("world_points"), # 那和pointnet 有什么区别
             depth=vggt_outputs.get("depth"),
             pose_enc=vggt_outputs.get("pose_enc")
         )  # [B, S, geom_output_dim]
@@ -256,7 +256,7 @@ class VGGTVLA(nn.Module):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=128
+                max_length=128 # 够用吗？
             ).to(device)
         else:
             # Assume already tokenized
