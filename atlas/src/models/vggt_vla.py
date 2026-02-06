@@ -194,16 +194,22 @@ class VGGTVLA(nn.Module):
         )
         
         # 4. Multimodal fusion
+        # 改进5: 支持attention pooling选项
+        use_attention_pooling = kwargs.get("use_attention_pooling", True)
         self.fusion = MultimodalFusion(
             lang_dim=lang_hidden_size,
             geom_dim=geom_output_dim,
-            hidden_dim=fusion_hidden_dim
+            hidden_dim=fusion_hidden_dim,
+            use_attention_pooling=use_attention_pooling
         )
         
         # 5. Action prediction head
+        # 改进3: 支持四元数表示
+        use_quaternion = kwargs.get("use_quaternion", False)
         self.action_head = ActionHead(
             input_dim=fusion_hidden_dim,
-            action_dim=action_dim
+            action_dim=action_dim,
+            use_quaternion=use_quaternion
         )
         
     def forward(self, images, language_instruction, return_intermediates=False):

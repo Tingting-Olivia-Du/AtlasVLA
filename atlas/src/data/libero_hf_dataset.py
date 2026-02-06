@@ -8,6 +8,9 @@ import numpy as np
 from PIL import Image
 from typing import Dict, List, Optional
 import io
+import os
+
+from .action_normalizer import ActionNormalizer
 
 try:
     from datasets import load_dataset, IterableDataset
@@ -49,6 +52,12 @@ class LIBEROHFDataset(Dataset):
         streaming: bool = True,
         cache_dir: Optional[str] = None,
         token: Optional[str] = None,
+        # 改进4: 多帧时序训练支持
+        num_temporal_frames: int = 1,  # 时序帧数，1表示单帧（原始行为）
+        temporal_stride: int = 1,  # 帧之间的步长
+        # 改进1: 动作归一化支持
+        normalize_actions: bool = False,  # 是否归一化动作
+        action_stats_path: Optional[str] = None,  # 动作统计信息文件路径
     ):
         if not HF_AVAILABLE:
             raise ImportError(
@@ -60,6 +69,17 @@ class LIBEROHFDataset(Dataset):
         self.image_size = image_size
         self.use_wrist_camera = use_wrist_camera
         self.streaming = streaming
+        
+        # 改进4: 多帧时序训练参数
+        self.num_temporal_frames = num_temporal_frames
+        self.temporal_stride = temporal_stride
+        
+        # 改进1: 动作归一化
+        self.normalize_actions = normalize_actions
+        if normalize_actions:
+            self.action_normalizer = ActionNormalizer(stats_path=action_stats_path)
+        else:
+            self.action_normalizer = None
         
         # 处理split名称
         if split == "val":
@@ -126,6 +146,12 @@ class LIBEROHFDataset(Dataset):
                     print(f"  {key}: {value}")
                 else:
                     print(f"  {key}: {type(value).__name__}")
+        
+        # 打印改进功能状态
+        if num_temporal_frames > 1:
+            print(f"  使用多帧时序训练: {num_temporal_frames} 帧, stride={temporal_stride}")
+        if normalize_actions:
+            print(f"  动作归一化: 已启用")
     
     def _get_dataset_list(self):
         """延迟加载数据集列表（用于流式数据集）"""
@@ -222,77 +248,159 @@ class LIBEROHFDataset(Dataset):
         """
         获取单个数据样本
         
+        改进4: 支持多帧时序采样
+        改进1: 支持动作归一化
+        
         Returns:
             dict containing:
-                - images: [S, 3, H, W] - Stacked images (workspace + wrist)
-                - action: [7] - 7-DOF action
-                - language_task: str - Language instruction
+                - images: [S*T, 3, H, W] - 堆叠的图像（S=相机数，T=时序帧数）
+                - action: [7] - 7-DOF动作（可能已归一化）
+                - language_task: str - 语言指令
         """
-        # 获取样本
-        if self.streaming:
-            dataset_list = self._get_dataset_list()
-            sample = dataset_list[idx]
-        else:
-            sample = self.dataset[idx]
+        # 改进4: 多帧时序采样
+        # HuggingFace数据集通常每个样本是一个episode的单个帧
+        # 为了支持多帧时序，我们需要：
+        # 1. 如果num_temporal_frames=1，使用当前实现（单帧）
+        # 2. 如果num_temporal_frames>1，需要从episode中采样连续帧
+        # 注意：这需要数据集包含episode信息，或者我们假设连续的样本属于同一个episode
         
-        images = []
-        
-        # 加载workspace图像
-        # physical-intelligence/libero使用'image'字段
-        workspace_fields = ['image', 'workspace_image', 'workspace_rgb', 'images']
-        workspace_img = None
-        
-        for field in workspace_fields:
-            if field in sample:
-                workspace_img = sample[field]
-                break
-        
-        # 如果字段是列表，取第一个
-        if isinstance(workspace_img, list) and len(workspace_img) > 0:
-            workspace_img = workspace_img[0]
-        
-        if workspace_img is not None:
-            workspace_tensor = self._load_image_from_bytes(workspace_img)
-            images.append(workspace_tensor)
-        else:
-            # 创建dummy图像
-            images.append(torch.zeros(3, self.image_size, self.image_size))
-        
-        # 加载wrist图像（如果启用）
-        # physical-intelligence/libero使用'wrist_image'字段
-        if self.use_wrist_camera:
-            wrist_fields = ['wrist_image', 'wrist_rgb', 'wrist_camera', 'eye_in_hand_image']
-            wrist_img = None
+        if self.num_temporal_frames > 1:
+            # 多帧模式：采样连续的多帧
+            # 注意：这假设连续的样本索引属于同一个episode
+            # 如果数据集结构不同，可能需要调整
+            all_images = []
             
-            for field in wrist_fields:
+            for t in range(self.num_temporal_frames):
+                # 计算当前帧的索引
+                frame_idx = min(idx + t * self.temporal_stride, len(self.dataset) - 1)
+                
+                # 获取样本
+                if self.streaming:
+                    dataset_list = self._get_dataset_list()
+                    sample = dataset_list[frame_idx]
+                else:
+                    sample = self.dataset[frame_idx]
+                
+                # 加载当前帧的图像
+                frame_images = []
+                
+                # 加载workspace图像
+                workspace_fields = ['image', 'workspace_image', 'workspace_rgb', 'images']
+                workspace_img = None
+                
+                for field in workspace_fields:
+                    if field in sample:
+                        workspace_img = sample[field]
+                        break
+                
+                # 如果字段是列表，取第一个
+                if isinstance(workspace_img, list) and len(workspace_img) > 0:
+                    workspace_img = workspace_img[0]
+                
+                if workspace_img is not None:
+                    workspace_tensor = self._load_image_from_bytes(workspace_img)
+                    frame_images.append(workspace_tensor)
+                else:
+                    frame_images.append(torch.zeros(3, self.image_size, self.image_size))
+                
+                # 加载wrist图像（如果启用）
+                if self.use_wrist_camera:
+                    wrist_fields = ['wrist_image', 'wrist_rgb', 'wrist_camera', 'eye_in_hand_image']
+                    wrist_img = None
+                    
+                    for field in wrist_fields:
+                        if field in sample:
+                            wrist_img = sample[field]
+                            break
+                    
+                    if isinstance(wrist_img, list) and len(wrist_img) > 0:
+                        wrist_img = wrist_img[0]
+                    
+                    if wrist_img is not None:
+                        wrist_tensor = self._load_image_from_bytes(wrist_img)
+                        frame_images.append(wrist_tensor)
+                    else:
+                        frame_images.append(torch.zeros(3, self.image_size, self.image_size))
+                
+                # 堆叠当前帧的多个视角: [S, 3, H, W]
+                frame_stack = torch.stack(frame_images, dim=0)
+                all_images.append(frame_stack)
+            
+            # 堆叠所有时序帧: [T, S, 3, H, W] -> [T*S, 3, H, W]
+            images = torch.cat(all_images, dim=0)  # [T*S, 3, H, W]
+            
+            # 使用最后一帧的动作
+            if self.streaming:
+                dataset_list = self._get_dataset_list()
+                sample = dataset_list[idx]
+            else:
+                sample = self.dataset[idx]
+        else:
+            # 单帧模式（原始实现）
+            # 获取样本
+            if self.streaming:
+                dataset_list = self._get_dataset_list()
+                sample = dataset_list[idx]
+            else:
+                sample = self.dataset[idx]
+            
+            images = []
+            
+            # 加载workspace图像
+            workspace_fields = ['image', 'workspace_image', 'workspace_rgb', 'images']
+            workspace_img = None
+            
+            for field in workspace_fields:
                 if field in sample:
-                    wrist_img = sample[field]
+                    workspace_img = sample[field]
                     break
             
             # 如果字段是列表，取第一个
-            if isinstance(wrist_img, list) and len(wrist_img) > 0:
-                wrist_img = wrist_img[0]
+            if isinstance(workspace_img, list) and len(workspace_img) > 0:
+                workspace_img = workspace_img[0]
             
-            if wrist_img is not None:
-                wrist_tensor = self._load_image_from_bytes(wrist_img)
-                images.append(wrist_tensor)
+            if workspace_img is not None:
+                workspace_tensor = self._load_image_from_bytes(workspace_img)
+                images.append(workspace_tensor)
             else:
-                # 创建dummy图像
                 images.append(torch.zeros(3, self.image_size, self.image_size))
-        
-        # Stack images: [S, 3, H, W]
-        images = torch.stack(images, dim=0)
+            
+            # 加载wrist图像（如果启用）
+            if self.use_wrist_camera:
+                wrist_fields = ['wrist_image', 'wrist_rgb', 'wrist_camera', 'eye_in_hand_image']
+                wrist_img = None
+                
+                for field in wrist_fields:
+                    if field in sample:
+                        wrist_img = sample[field]
+                        break
+                
+                if isinstance(wrist_img, list) and len(wrist_img) > 0:
+                    wrist_img = wrist_img[0]
+                
+                if wrist_img is not None:
+                    wrist_tensor = self._load_image_from_bytes(wrist_img)
+                    images.append(wrist_tensor)
+                else:
+                    images.append(torch.zeros(3, self.image_size, self.image_size))
+            
+            # Stack images: [S, 3, H, W]
+            images = torch.stack(images, dim=0)
         
         # 提取动作
         action = self._extract_action(sample)
         action_tensor = torch.from_numpy(action).float()
         
+        # 改进1: 动作归一化
+        if self.normalize_actions and self.action_normalizer is not None:
+            action_tensor = self.action_normalizer.normalize(action_tensor)
+        
         # 提取语言任务
         language_task = self._extract_language(sample)
         
         return {
-            "images": images,  # [S, 3, H, W]
-            "action": action_tensor,  # [7]
+            "images": images,  # [S或T*S, 3, H, W]
+            "action": action_tensor,  # [7] - 可能已归一化
             "pose": action_tensor[:6],  # [6] - 6-DOF pose
             "gripper": action_tensor[6:7],  # [1] - gripper
             "language_task": language_task,

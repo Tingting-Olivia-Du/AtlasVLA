@@ -226,6 +226,7 @@ def main():
     
     try:
         model_config = config["model"]
+        # 改进：支持新的模型参数
         model = VGGTVLA(
             vggt_model=None,  # Will load from checkpoint
             lang_encoder_name=model_config["lang_encoder_name"],
@@ -237,6 +238,10 @@ def main():
             use_pointnet=model_config.get("use_pointnet", True),
             use_pose=model_config.get("use_pose", True),
             hf_token=hf_token,  # Pass token to model (will also be set in env)
+            # 改进3: 四元数表示
+            use_quaternion=model_config.get("use_quaternion", False),
+            # 改进5: Attention pooling
+            use_attention_pooling=model_config.get("use_attention_pooling", True),
         )
         model = model.to(device)
         
@@ -303,6 +308,12 @@ def main():
                     streaming=data_config.get("streaming", False),
                     cache_dir=data_config.get("hf_cache_dir", None),
                     token=hf_token,
+                    # 改进4: 多帧时序训练支持
+                    num_temporal_frames=data_config.get("num_temporal_frames", 1),
+                    temporal_stride=data_config.get("temporal_stride", 1),
+                    # 改进1: 动作归一化支持
+                    normalize_actions=data_config.get("normalize_actions", False),
+                    action_stats_path=data_config.get("action_stats_path"),
                 )
                 logging.info("  Rank 0: Dataset loaded, waiting for other ranks...")
             
@@ -319,6 +330,12 @@ def main():
                     streaming=data_config.get("streaming", False),
                     cache_dir=data_config.get("hf_cache_dir", None),
                     token=hf_token,
+                    # 改进4: 多帧时序训练支持
+                    num_temporal_frames=data_config.get("num_temporal_frames", 1),
+                    temporal_stride=data_config.get("temporal_stride", 1),
+                    # 改进1: 动作归一化支持
+                    normalize_actions=data_config.get("normalize_actions", False),
+                    action_stats_path=data_config.get("action_stats_path"),
                 )
         else:
             # Single GPU: load normally
@@ -344,11 +361,18 @@ def main():
         if rank == 0:
             logging.info(f"  Using local dataset from: {data_config['data_dir']}")
         
+        # 改进：支持新的dataset参数
         train_dataset = LIBERODataset(
             data_dir=data_config["data_dir"],
             split=data_config["train_split"],
             image_size=data_config["image_size"],
             use_wrist_camera=data_config["use_wrist_camera"],
+            # 改进4: 多帧时序训练
+            num_temporal_frames=data_config.get("num_temporal_frames", 1),
+            temporal_stride=data_config.get("temporal_stride", 1),
+            # 改进1: 动作归一化
+            normalize_actions=data_config.get("normalize_actions", False),
+            action_stats_path=data_config.get("action_stats_path"),
         )
         
         val_dataset = None
@@ -358,6 +382,12 @@ def main():
                 split=data_config["val_split"],
                 image_size=data_config["image_size"],
                 use_wrist_camera=data_config["use_wrist_camera"],
+                # 改进4: 多帧时序训练
+                num_temporal_frames=data_config.get("num_temporal_frames", 1),
+                temporal_stride=data_config.get("temporal_stride", 1),
+                # 改进1: 动作归一化
+                normalize_actions=data_config.get("normalize_actions", False),
+                action_stats_path=data_config.get("action_stats_path"),
             )
     
     # Create distributed samplers if needed
@@ -400,6 +430,13 @@ def main():
     
     # Prepare wandb config
     wandb_config = config.get("wandb", {})
+    use_wandb = wandb_config.get("enabled", False) and rank == 0  # Only rank 0 logs to wandb
+    
+    if rank == 0:
+        if use_wandb:
+            logging.info("Wandb enabled - experiment tracking will be saved")
+        else:
+            logging.info("Wandb disabled - set wandb.enabled: true in config to enable")
     
     trainer = VLATrainer(
         model=model,
@@ -414,7 +451,7 @@ def main():
         log_interval=training_config["log_interval"],
         val_interval=training_config["val_interval"],
         save_interval=training_config["save_interval"],
-        use_wandb=wandb_config.get("enabled", False) and rank == 0,  # Only rank 0 logs to wandb
+        use_wandb=use_wandb,
         wandb_project=wandb_config.get("project", "atlas-vla"),
         wandb_entity=wandb_config.get("entity"),
         wandb_name=wandb_config.get("name"),
@@ -425,6 +462,9 @@ def main():
         train_sampler=train_sampler,
         val_sampler=val_sampler,
         loss=training_config.get("loss", {}),
+        # 传递wandb配置参数
+        save_code=wandb_config.get("save_code", True),
+        resume=wandb_config.get("resume", "allow"),
     )
     
     # Resume from checkpoint if specified

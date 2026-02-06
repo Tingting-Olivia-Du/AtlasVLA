@@ -57,6 +57,8 @@ class VLATrainer:
         gradient_accumulation_steps: int = 1,
         train_sampler=None,
         val_sampler=None,
+        save_code: bool = True,  # wandb保存代码选项
+        resume: str = "allow",  # wandb resume选项
         **kwargs
     ):
         self.model = model.to(device)
@@ -117,7 +119,9 @@ class VLATrainer:
             self.val_loader = None
             
         # Loss function
-        self.criterion = VLALoss(**kwargs.get("loss", {}))
+        # 改进6: 传递loss配置，包括辅助损失参数
+        loss_config = kwargs.get("loss", {})
+        self.criterion = VLALoss(**loss_config)
         
         # Optimizer - only optimize trainable parameters
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
@@ -159,39 +163,54 @@ class VLATrainer:
         # Wandb logging
         self.use_wandb = use_wandb
         if self.use_wandb:
-            # 准备wandb配置
-            wandb_config = {
-                "project": wandb_project,
-                "config": kwargs,
-            }
-            
-            # 添加可选参数
-            if wandb_entity:
-                wandb_config["entity"] = wandb_entity
-            if wandb_name:
-                wandb_config["name"] = wandb_name
-            if wandb_tags:
-                wandb_config["tags"] = wandb_tags
-            if wandb_notes:
-                wandb_config["notes"] = wandb_notes
-            
-            # 初始化wandb
-            wandb.init(**wandb_config)
-            
-            # 记录模型架构信息
-            if hasattr(self.model, 'module'):  # DDP模型
-                model_to_log = self.model.module
-            else:
-                model_to_log = self.model
-            
-            total_params = sum(p.numel() for p in model_to_log.parameters())
-            trainable_params = sum(p.numel() for p in model_to_log.parameters() if p.requires_grad)
-            
-            wandb.config.update({
-                "total_parameters": total_params,
-                "trainable_parameters": trainable_params,
-                "frozen_parameters": total_params - trainable_params,
-            })
+            try:
+                # 准备wandb配置
+                wandb_config = {
+                    "project": wandb_project,
+                    "config": kwargs,
+                    "save_code": save_code,  # 保存代码到wandb
+                    "resume": resume,  # 如果实验已存在如何处理
+                }
+                
+                # 添加可选参数
+                if wandb_entity:
+                    wandb_config["entity"] = wandb_entity
+                if wandb_name:
+                    wandb_config["name"] = wandb_name
+                if wandb_tags:
+                    wandb_config["tags"] = wandb_tags
+                if wandb_notes:
+                    wandb_config["notes"] = wandb_notes
+                
+                # 初始化wandb
+                wandb.init(**wandb_config)
+                
+                # 记录模型架构信息
+                if hasattr(self.model, 'module'):  # DDP模型
+                    model_to_log = self.model.module
+                else:
+                    model_to_log = self.model
+                
+                total_params = sum(p.numel() for p in model_to_log.parameters())
+                trainable_params = sum(p.numel() for p in model_to_log.parameters() if p.requires_grad)
+                
+                wandb.config.update({
+                    "total_parameters": total_params,
+                    "trainable_parameters": trainable_params,
+                    "frozen_parameters": total_params - trainable_params,
+                    "batch_size": batch_size,
+                    "learning_rate": learning_rate,
+                    "weight_decay": weight_decay,
+                    "num_epochs": num_epochs,
+                    "warmup_steps": warmup_steps,
+                    "gradient_accumulation_steps": gradient_accumulation_steps,
+                })
+                
+                logging.info(f"Wandb initialized: {wandb.run.url if wandb.run else 'N/A'}")
+            except Exception as e:
+                logging.warning(f"Failed to initialize wandb: {e}")
+                logging.warning("Continuing training without wandb...")
+                self.use_wandb = False
             
     def train_epoch(self):
         """Train for one epoch"""
@@ -213,19 +232,31 @@ class VLATrainer:
             
             # Forward pass with mixed precision
             with torch.cuda.amp.autocast():
-                outputs = self.model(images, language_tasks)
+                # 改进6: 如果需要辅助损失，返回中间特征
+                return_intermediates = self.criterion.use_auxiliary_loss if hasattr(self.criterion, 'use_auxiliary_loss') else False
+                outputs = self.model(images, language_tasks, return_intermediates=return_intermediates)
                 
                 # Compute loss
-                loss_dict = self.criterion(
-                    predictions={
+                # 改进6: 传递中间特征用于辅助损失
+                loss_kwargs = {
+                    "predictions": {
                         "pose": outputs["pose"],
                         "gripper": outputs["gripper"]
                     },
-                    targets={
+                    "targets": {
                         "pose": batch["pose"].to(self.device),
                         "gripper": batch["gripper"].to(self.device)
                     }
-                )
+                }
+                
+                # 如果返回了中间特征，添加到loss计算中
+                if return_intermediates and "geometry_features" in outputs:
+                    loss_kwargs["intermediates"] = {
+                        "geometry_features": outputs.get("geometry_features"),
+                        "fused_features": outputs.get("fused_features"),
+                    }
+                
+                loss_dict = self.criterion(**loss_kwargs)
                 
                 # Scale loss by accumulation steps
                 loss = loss_dict["total_loss"] / self.gradient_accumulation_steps
@@ -237,6 +268,12 @@ class VLATrainer:
             total_loss += loss_dict["total_loss"].item()
             total_pose_loss += loss_dict["pose_loss"].item()
             total_gripper_loss += loss_dict["gripper_loss"].item()
+            
+            # 改进6: 记录辅助损失（如果启用）
+            if hasattr(self.criterion, 'use_auxiliary_loss') and self.criterion.use_auxiliary_loss:
+                if "auxiliary_loss" in loss_dict:
+                    # 这里可以累积辅助损失用于日志
+                    pass
             
             # Update parameters every gradient_accumulation_steps
             if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
@@ -266,6 +303,11 @@ class VLATrainer:
                     "train/epoch": self.epoch,
                     "train/step": self.global_step,
                 }
+                
+                # 改进6: 如果启用了辅助损失，记录辅助损失
+                if hasattr(self.criterion, 'use_auxiliary_loss') and self.criterion.use_auxiliary_loss:
+                    if "auxiliary_loss" in loss_dict:
+                        log_dict["train/auxiliary_loss"] = loss_dict["auxiliary_loss"].item()
                 
                 if self.use_wandb:
                     wandb.log(log_dict, step=self.global_step)
@@ -327,18 +369,31 @@ class VLATrainer:
             language_tasks = batch["language_task"]
             
             with torch.cuda.amp.autocast():
-                outputs = self.model(images, language_tasks)
+                # 改进6: 如果需要辅助损失，返回中间特征
+                return_intermediates = self.criterion.use_auxiliary_loss if hasattr(self.criterion, 'use_auxiliary_loss') else False
+                outputs = self.model(images, language_tasks, return_intermediates=return_intermediates)
                 
-                loss_dict = self.criterion(
-                    predictions={
+                # Compute loss
+                # 改进6: 传递中间特征用于辅助损失
+                loss_kwargs = {
+                    "predictions": {
                         "pose": outputs["pose"],
                         "gripper": outputs["gripper"]
                     },
-                    targets={
+                    "targets": {
                         "pose": batch["pose"].to(self.device),
                         "gripper": batch["gripper"].to(self.device)
                     }
-                )
+                }
+                
+                # 如果返回了中间特征，添加到loss计算中
+                if return_intermediates and "geometry_features" in outputs:
+                    loss_kwargs["intermediates"] = {
+                        "geometry_features": outputs.get("geometry_features"),
+                        "fused_features": outputs.get("fused_features"),
+                    }
+                
+                loss_dict = self.criterion(**loss_kwargs)
                 
                 metrics = self.criterion.compute_metrics(
                     predictions={
@@ -365,8 +420,9 @@ class VLATrainer:
         }
         
         # Average other metrics
-        for key in all_metrics[0].keys():
-            val_metrics[f"val/{key}"] = sum(m[key] for m in all_metrics) / len(all_metrics)
+        if len(all_metrics) > 0:
+            for key in all_metrics[0].keys():
+                val_metrics[f"val/{key}"] = sum(m[key] for m in all_metrics) / len(all_metrics)
             
         # Save best model
         if val_metrics["val/loss"] < self.best_val_loss:
