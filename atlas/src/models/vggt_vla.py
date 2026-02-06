@@ -5,6 +5,9 @@ Main model that integrates VGGT, language encoder, and action prediction
 
 import torch
 import torch.nn as nn
+import os
+import logging
+import sys
 from transformers import AutoModel, AutoTokenizer
 
 # Import VGGT - try package import first, fallback to relative import
@@ -54,7 +57,9 @@ class VGGTVLA(nn.Module):
                  fusion_hidden_dim=1024,
                  action_dim=7,
                  use_pointnet=True,
-                 use_pose=True):
+                 use_pose=True,
+                 hf_token=None,
+                 **kwargs):
         super().__init__()
         
         # 1. VGGT backbone
@@ -74,23 +79,98 @@ class VGGTVLA(nn.Module):
         else:
             print("VGGT model trainable")
             
-        # 2. Language encoder (LLaMA 2 encoder)
+        # 2. Language encoder (LLaMA encoder)
         print(f"Loading language encoder: {lang_encoder_name}")
+        
+        # Get HuggingFace token: priority: parameter > kwargs > environment variable
+        if hf_token is None:
+            hf_token = kwargs.get('hf_token')
+        if hf_token is None:
+            hf_token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGINGFACE_TOKEN')
+        
         try:
+            # Ensure token is set in environment for transformers library
+            # Transformers will automatically use HF_TOKEN from environment
+            if hf_token:
+                os.environ['HF_TOKEN'] = hf_token
+                os.environ['HUGGINGFACE_TOKEN'] = hf_token
+                logging.info(f"HuggingFace token set in environment for model loading")
+                print(f"Using HuggingFace token for authentication", flush=True)
+            else:
+                # Try to get from environment if not provided
+                hf_token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGINGFACE_TOKEN')
+                if not hf_token:
+                    logging.warning("No HuggingFace token found!")
+                    print("Warning: No HuggingFace token provided.", flush=True)
+                    print("  Trying to load from environment variables or huggingface-cli login...", flush=True)
+                else:
+                    logging.info(f"Using HF_TOKEN from environment")
+            
+            # Load model - explicitly pass token
+            logging.info(f"Loading language encoder: {lang_encoder_name}")
+            print(f"Loading model: {lang_encoder_name}", flush=True)
+            sys.stdout.flush()
+            
+            # Prepare load_kwargs with token
+            load_kwargs = {
+                'trust_remote_code': True,
+            }
+            if hf_token:
+                load_kwargs['token'] = hf_token
+                logging.info(f"Token added to load_kwargs")
+            else:
+                logging.warning(f"No token available for model loading")
+            
+            logging.info(f"load_kwargs: {load_kwargs}")
+            
+            # Try loading config first to debug and ensure token is working
+            try:
+                from transformers import AutoConfig
+                print(f"Attempting to load config with token: {'Yes' if hf_token else 'No'}", flush=True)
+                logging.info(f"Attempting to load config with token: {'Yes' if hf_token else 'No'}")
+                if hf_token:
+                    print(f"Token (first 15 chars): {hf_token[:15]}...", flush=True)
+                    logging.info(f"Token for config: {hf_token[:15]}...")
+                print(f"load_kwargs keys: {list(load_kwargs.keys())}", flush=True)
+                logging.info(f"load_kwargs: {load_kwargs}")
+                config_obj = AutoConfig.from_pretrained(lang_encoder_name, **load_kwargs)
+                print(f"Config loaded successfully. Model type: {config_obj.model_type}", flush=True)
+                logging.info(f"Config loaded successfully. Model type: {config_obj.model_type}")
+            except Exception as config_error:
+                print(f"ERROR: Failed to load config: {config_error}")
+                print(f"Token provided: {'Yes' if hf_token else 'No'}")
+                if hf_token:
+                    print(f"Token value: {hf_token[:20]}...")
+                print(f"Environment HF_TOKEN: {os.environ.get('HF_TOKEN', 'Not set')[:20] + '...' if os.environ.get('HF_TOKEN') else 'Not set'}")
+                print(f"load_kwargs: {load_kwargs}")
+                raise  # Don't continue if config fails
+            
+            # Load model with explicit token
+            print(f"Loading model with token: {'Yes' if hf_token else 'No'}")
             self.lang_encoder = AutoModel.from_pretrained(
                 lang_encoder_name,
-                trust_remote_code=True
+                **load_kwargs
             )
+            print(f"Loading tokenizer: {lang_encoder_name}")
             self.lang_tokenizer = AutoTokenizer.from_pretrained(
                 lang_encoder_name,
-                trust_remote_code=True
+                **load_kwargs
             )
             # Set pad token if not exists
             if self.lang_tokenizer.pad_token is None:
                 self.lang_tokenizer.pad_token = self.lang_tokenizer.eos_token
+                logging.info("Set pad_token = eos_token")
+            
+            logging.info("Language encoder and tokenizer ready")
+            print(f"Language encoder and tokenizer ready", flush=True)
         except Exception as e:
-            print(f"Warning: Could not load {lang_encoder_name}: {e}")
-            print("Falling back to a smaller model or you may need to set up authentication")
+            logging.error(f"Error: Could not load {lang_encoder_name}: {e}")
+            print(f"Error: Could not load {lang_encoder_name}: {e}", flush=True)
+            print("Please check:", flush=True)
+            print("  1. Model name is correct", flush=True)
+            print("  2. You have access to the model", flush=True)
+            print("  3. HuggingFace token is set (via config or HF_TOKEN env var)", flush=True)
+            print(f"  4. Environment HF_TOKEN: {os.environ.get('HF_TOKEN', 'NOT SET')[:20]}...", flush=True)
             raise
             
         self.freeze_lang_encoder = freeze_lang_encoder

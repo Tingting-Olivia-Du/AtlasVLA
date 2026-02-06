@@ -1,0 +1,64 @@
+# 如果要微调LLaMA的配置（需要清理显存或使用更小batch）
+# ⚠️ 警告：这个配置需要约30-32GB显存
+
+# Model configuration
+model:
+  vggt_checkpoint: "facebook/VGGT-1B"
+  lang_encoder_name: "meta-llama/Llama-2-7b-hf"
+  freeze_vggt: true  # ✅ 冻结VGGT
+  freeze_lang_encoder: false  # ⚠️ 微调LLaMA（需要大量显存）
+  geom_output_dim: 512
+  fusion_hidden_dim: 1024
+  action_dim: 7
+  use_pointnet: true
+  use_pose: true
+
+# Data configuration
+data:
+  data_dir: "/path/to/libero/data"
+  train_split: "train"
+  val_split: "val"
+  image_size: 518
+  use_wrist_camera: true
+  batch_size: 2  # ⚠️ 减少到2（每个GPU）
+  num_workers: 4
+
+# Training configuration
+training:
+  num_epochs: 50
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  gradient_accumulation_steps: 4  # ✅ 累积4步，有效batch = 2 × 8 × 4 = 64
+  # 这样总batch size和batch_size=8, 8GPU一样，但显存需求更小
+  
+  # Loss weights
+  loss:
+    pose_weight: 1.0
+    gripper_weight: 0.5
+    pose_loss_type: "smooth_l1"
+    gripper_loss_type: "l1"
+  
+  # Logging intervals
+  log_interval: 100
+  val_interval: 1000
+  save_interval: 5000
+
+# Checkpointing
+checkpoint:
+  save_dir: "./checkpoints"
+  resume_from: null
+
+# Experiment tracking
+wandb:
+  enabled: false
+  project: "atlas-vla"
+  entity: null
+  name: null
+  tags: []
+  notes: ""
+  save_code: true
+  resume: "allow"
+
+# Device
+device: "cuda"

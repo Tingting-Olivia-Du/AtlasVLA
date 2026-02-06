@@ -3,20 +3,38 @@
 # Model configuration
 model:
   vggt_checkpoint: "facebook/VGGT-1B"
-  lang_encoder_name: "meta-llama/Llama-2-7b-hf"
+  lang_encoder_name: "meta-llama/Meta-Llama-3-8B"  # 更新为Llama-3-8B
   freeze_vggt: true
-  freeze_lang_encoder: false
+  freeze_lang_encoder: true
   geom_output_dim: 512
   fusion_hidden_dim: 1024
   action_dim: 7
   use_pointnet: true
   use_pose: true
 
+# HuggingFace authentication
+huggingface:
+  # HuggingFace token (用于访问私有模型)
+  token: "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"  # 你的HuggingFace token
+  # 或者设置为null，使用环境变量HF_TOKEN或通过huggingface-cli login
+  # token: null
+
 # Data configuration
 data:
-  data_dir: "/path/to/libero/data"  # Update this path
+  # 数据源选择：HuggingFace或本地数据
+  use_huggingface: true  # true = 使用HuggingFace数据（推荐），false = 使用本地HDF5转换后的数据
+  
+  # HuggingFace数据配置（当use_huggingface=true时使用）
+  hf_dataset_name: "physical-intelligence/libero"  # HuggingFace数据集名称
+  streaming: false  # false = 下载并缓存，true = 流式加载（节省内存但需要网络）
+  hf_cache_dir: null  # HuggingFace缓存目录（null = 使用默认）
+  
+  # 本地数据配置（当use_huggingface=false时使用）
+  data_dir: "./dataset"  # LIBERO数据集路径（相对于项目根目录，HDF5转换后的格式）
+  
+  # 通用配置
   train_split: "train"
-  val_split: "val"
+  val_split: null  # HuggingFace数据通常只有train，设为null跳过验证集
   image_size: 518  # VGGT input size
   use_wrist_camera: true
   batch_size: 8
@@ -25,9 +43,10 @@ data:
 # Training configuration
 training:
   num_epochs: 50
-  learning_rate: 1e-4
+  learning_rate: 0.0001  # Base learning rate (will be scaled by num_gpus in distributed training)
   weight_decay: 0.01
-  warmup_steps: 1000
+  warmup_steps: 1000  # Number of steps for learning rate warmup
+  gradient_accumulation_steps: 1  # Accumulate gradients over N steps before updating (simulates larger batch size)
   
   # Loss weights
   loss:
@@ -46,11 +65,27 @@ checkpoint:
   save_dir: "./checkpoints"
   resume_from: null  # Path to checkpoint to resume from
 
-# Experiment tracking
+# Logging configuration
+logging:
+  # 是否保存训练日志到文件
+  save_to_file: true
+  # 日志文件保存路径（null = 自动生成，格式: logs/train_YYYYMMDD_HHMMSS.log）
+  log_file: null  # 例如: "logs/train.log" 或 null 自动生成
+  # 日志目录（如果log_file为null，会在此目录下自动生成日志文件）
+  log_dir: "./logs"
+  # 是否同时输出到控制台
+  console_output: true
+
+# Experiment tracking with Weights & Biases (wandb)
 wandb:
-  enabled: false
-  project: "atlas-vla"
-  entity: null  # Your wandb entity/username
+  enabled: false  # 设置为 true 启用wandb记录
+  project: "atlas-vla"  # wandb项目名称
+  entity: tingtingdu06-uw-madison  # 你的wandb用户名/团队名（留空使用默认）
+  name: null  # 实验名称（留空自动生成，格式: atlas-vla-YYYYMMDD-HHMMSS）
+  tags: []  # 实验标签，例如: ["baseline", "vggt-frozen"]
+  notes: ""  # 实验备注/描述
+  save_code: true  # 是否保存代码到wandb
+  resume: "allow"  # 如果实验已存在，如何处理: "allow", "must", "never", "auto"
 
 # Device
 device: "cuda"

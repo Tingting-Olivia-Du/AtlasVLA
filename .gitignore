@@ -97,3 +97,4 @@ vggt/**/*.pyc
 atlas/__pycache__/
 atlas/*.pyc
 atlas/.pytest_cache/
+dataset/LIBERO/
