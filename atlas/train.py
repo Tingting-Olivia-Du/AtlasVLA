@@ -224,6 +224,20 @@ def main():
             logging.warning("No HuggingFace token found in config or environment!")
             logging.warning("Model loading will likely fail. Please set token in config or use huggingface-cli login")
     
+    # Set WandB environment variables if provided
+    # Check if already set in environment (from train.sh), otherwise use empty string
+    if 'WANDB_API_KEY' in os.environ and os.environ['WANDB_API_KEY']:
+        if rank == 0:
+            logging.info("WandB API key found in environment")
+            logging.info(f"API key (first 10 chars): {os.environ['WANDB_API_KEY'][:10]}...")
+    else:
+        if rank == 0:
+            logging.info("No WandB API key in environment - will use wandb login state")
+    
+    if 'WANDB_ENTITY' in os.environ and os.environ['WANDB_ENTITY']:
+        if rank == 0:
+            logging.info(f"WandB entity: {os.environ['WANDB_ENTITY']}")
+    
     try:
         model_config = config["model"]
         # 改进：支持新的模型参数
@@ -314,6 +328,8 @@ def main():
                     # 改进1: 动作归一化支持
                     normalize_actions=data_config.get("normalize_actions", False),
                     action_stats_path=data_config.get("action_stats_path"),
+                    # 改进3: 四元数支持
+                    use_quaternion=model_config.get("use_quaternion", False),
                 )
                 logging.info("  Rank 0: Dataset loaded, waiting for other ranks...")
             
@@ -336,6 +352,8 @@ def main():
                     # 改进1: 动作归一化支持
                     normalize_actions=data_config.get("normalize_actions", False),
                     action_stats_path=data_config.get("action_stats_path"),
+                    # 改进3: 四元数支持
+                    use_quaternion=model_config.get("use_quaternion", False),
                 )
         else:
             # Single GPU: load normally
@@ -347,6 +365,14 @@ def main():
                 streaming=data_config.get("streaming", False),
                 cache_dir=data_config.get("hf_cache_dir", None),
                 token=hf_token,
+                # 改进4: 多帧时序训练支持
+                num_temporal_frames=data_config.get("num_temporal_frames", 1),
+                temporal_stride=data_config.get("temporal_stride", 1),
+                # 改进1: 动作归一化支持
+                normalize_actions=data_config.get("normalize_actions", False),
+                action_stats_path=data_config.get("action_stats_path"),
+                # 改进3: 四元数支持
+                use_quaternion=model_config.get("use_quaternion", False),
             )
         
         val_dataset = None
@@ -446,13 +472,14 @@ def main():
         learning_rate=effective_lr,
         weight_decay=training_config["weight_decay"],
         num_epochs=training_config["num_epochs"],
+        max_steps=training_config.get("max_steps"),  # None表示不限制
         device=device,
         save_dir=config["checkpoint"]["save_dir"],
         log_interval=training_config["log_interval"],
         val_interval=training_config["val_interval"],
         save_interval=training_config["save_interval"],
         use_wandb=use_wandb,
-        wandb_project=wandb_config.get("project", "atlas-vla"),
+        wandb_project=wandb_config.get("project", "Atlas"),
         wandb_entity=wandb_config.get("entity"),
         wandb_name=wandb_config.get("name"),
         wandb_tags=wandb_config.get("tags", []),

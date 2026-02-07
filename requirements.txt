@@ -15,6 +15,8 @@ pyyaml>=6.0
 # Utilities
 tqdm>=4.65.0
 
+datasets>=2.14.0
+
 # Optional: Experiment tracking
 # wandb>=0.15.0
 

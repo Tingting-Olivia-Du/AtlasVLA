@@ -1,4 +1,5 @@
 # Training configuration for Atlas VLA
+# bash atlas/scripts/train.sh
 
 # Model configuration
 model:
@@ -8,20 +9,20 @@ model:
   freeze_lang_encoder: true
   geom_output_dim: 512
   fusion_hidden_dim: 1024
-  action_dim: 7  # 7 for 欧拉角，8 for 四元数
+  action_dim: 8  # 7 for 欧拉角，8 for 四元数
   use_pointnet: true
   use_pose: true
   # 改进3: 四元数表示选项
-  use_quaternion: false  # 是否使用四元数表示旋转（推荐true，避免欧拉角奇异性）
+  use_quaternion: true  # 是否使用四元数表示旋转（推荐true，避免欧拉角奇异性）
   # 改进2: Diffusion Head选项
-  use_diffusion_head: false  # 是否使用Diffusion Action Head（默认false，使用传统回归head）
+  use_diffusion_head: true  # 是否使用Diffusion Action Head（默认false，使用传统回归head）
   # 改进5: Fusion模块改进
   use_attention_pooling: true  # 是否使用attention pooling（推荐true）
 
 # HuggingFace authentication
 huggingface:
   # HuggingFace token (用于访问私有模型)
-  token: "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"  # 你的HuggingFace token
+  token: null  # 你的HuggingFace token
   # 或者设置为null，使用环境变量HF_TOKEN或通过huggingface-cli login
   # token: null
 
@@ -31,7 +32,8 @@ data:
   use_huggingface: true  # true = 使用HuggingFace数据（推荐），false = 使用本地HDF5转换后的数据
   
   # HuggingFace数据配置（当use_huggingface=true时使用）
-  hf_dataset_name: "physical-intelligence/libero"  # HuggingFace数据集名称
+  # hf_dataset_name: "physical-intelligence/libero"
+  hf_dataset_name: "lerobot/libero_spatial_image"  # HuggingFace数据集名称（LIBERO-Spatial子集，10个空间推理任务，53k帧）
   streaming: false  # false = 下载并缓存，true = 流式加载（节省内存但需要网络）
   hf_cache_dir: null  # HuggingFace缓存目录（null = 使用默认）
   
@@ -41,25 +43,26 @@ data:
   # 通用配置
   train_split: "train"
   val_split: null  # HuggingFace数据通常只有train，设为null跳过验证集
-  image_size: 518  # VGGT input size
+  image_size: 518  # VGGT input size (原始图像256x256会被resize到518x518)
   use_wrist_camera: true
-  batch_size: 8
-  num_workers: 4
+  batch_size: 8  # 降低以避免 OOM
+  num_workers: 0  # 禁用多进程，避免死锁
   # 改进4: 多帧时序训练配置
-  num_temporal_frames: 1  # 时序帧数（1=单帧，2+=多帧时序）
-  temporal_stride: 1  # 帧之间的步长
+  num_temporal_frames: 2  # 时序帧数（降低以节省显存）
+  temporal_stride: 2  # 帧之间的步长
   # 改进1: 动作归一化配置
-  normalize_actions: false  # 是否归一化动作（推荐true，解决尺度差异问题）
+  normalize_actions: true  # 是否归一化动作（推荐true，解决尺度差异问题）
   action_stats_path: null  # 动作统计信息文件路径（null=自动计算）
 
 # Training configuration
 training:
   num_epochs: 50
+  max_steps: null  # 最大训练步数（null表示不限制，基于epoch训练；设置数值时会在达到该步数时提前停止）
   # 改进7: 超参数调整
   learning_rate: 0.00005  # 降低学习率（从0.0001降到0.00005）以提高训练稳定性
   weight_decay: 0.001  # 降低weight_decay（从0.01降到0.001）减少正则化强度
   warmup_steps: 2000  # 增加warmup步数（从1000到2000）让学习率更平滑地增长
-  gradient_accumulation_steps: 1  # Accumulate gradients over N steps before updating (simulates larger batch size)
+  gradient_accumulation_steps: 4  # 梯度累积，有效 batch_size = 2×4 = 8
   
   # Loss weights
   loss:
@@ -74,8 +77,8 @@ training:
   
   # Logging intervals
   log_interval: 100
-  val_interval: 1000
-  save_interval: 5000
+  val_interval: 10000
+  save_interval: 10000
 
 # Checkpointing
 checkpoint:
@@ -95,9 +98,9 @@ logging:
 
 # Experiment tracking with Weights & Biases (wandb)
 wandb:
-  enabled: false  # 设置为 true 启用wandb记录
-  project: "atlas-vla"  # wandb项目名称
-  entity: tingtingdu06-uw-madison  # 你的wandb用户名/团队名（留空使用默认）
+  enabled: true  # 启用 wandb 记录
+  project: "Atlas"  # wandb项目名称
+  entity: "tingtingdu06-uw-madison"  # 你的wandb用户名/团队名
   name: null  # 实验名称（留空自动生成，格式: atlas-vla-YYYYMMDD-HHMMSS）
   tags: []  # 实验标签，例如: ["baseline", "vggt-frozen"]
   notes: ""  # 实验备注/描述

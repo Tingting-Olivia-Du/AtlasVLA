@@ -12,6 +12,31 @@ import os
 
 from .action_normalizer import ActionNormalizer
 
+
+def euler_to_quaternion(roll, pitch, yaw):
+    """
+    将欧拉角（roll, pitch, yaw）转换为四元数（qw, qx, qy, qz）
+    
+    Args:
+        roll, pitch, yaw: 欧拉角（弧度）
+        
+    Returns:
+        quaternion: [qw, qx, qy, qz]
+    """
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+    
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    
+    return np.array([qw, qx, qy, qz], dtype=np.float32)
+
 try:
     from datasets import load_dataset, IterableDataset
     HF_AVAILABLE = True
@@ -58,6 +83,8 @@ class LIBEROHFDataset(Dataset):
         # 改进1: 动作归一化支持
         normalize_actions: bool = False,  # 是否归一化动作
         action_stats_path: Optional[str] = None,  # 动作统计信息文件路径
+        # 改进3: 四元数支持
+        use_quaternion: bool = False,  # 是否将欧拉角转换为四元数
     ):
         if not HF_AVAILABLE:
             raise ImportError(
@@ -74,10 +101,16 @@ class LIBEROHFDataset(Dataset):
         self.num_temporal_frames = num_temporal_frames
         self.temporal_stride = temporal_stride
         
+        # 改进3: 四元数支持
+        self.use_quaternion = use_quaternion
+        
         # 改进1: 动作归一化
         self.normalize_actions = normalize_actions
         if normalize_actions:
-            self.action_normalizer = ActionNormalizer(stats_path=action_stats_path)
+            self.action_normalizer = ActionNormalizer(
+                stats_path=action_stats_path,
+                use_quaternion=use_quaternion  # 传递四元数标志
+            )
         else:
             self.action_normalizer = None
         
@@ -152,6 +185,8 @@ class LIBEROHFDataset(Dataset):
             print(f"  使用多帧时序训练: {num_temporal_frames} 帧, stride={temporal_stride}")
         if normalize_actions:
             print(f"  动作归一化: 已启用")
+        if use_quaternion:
+            print(f"  四元数转换: 已启用 (欧拉角→四元数，动作维度 7→8)")
     
     def _get_dataset_list(self):
         """延迟加载数据集列表（用于流式数据集）"""
@@ -195,32 +230,55 @@ class LIBEROHFDataset(Dataset):
         return image_tensor
     
     def _extract_action(self, sample) -> np.ndarray:
-        """从样本中提取动作（7-DOF）"""
+        """
+        从样本中提取动作
+        
+        Returns:
+            action: [7] 如果欧拉角模式: [x, y, z, roll, pitch, yaw, gripper]
+                    [8] 如果四元数模式: [x, y, z, qw, qx, qy, qz, gripper]
+        """
         # physical-intelligence/libero使用'actions'字段（注意是复数）
         action_fields = ['actions', 'action', 'ee_pose', 'end_effector_pose']
         
+        action = None
         for field in action_fields:
             if field in sample:
                 action = sample[field]
                 if isinstance(action, (list, np.ndarray)):
                     action = np.array(action)
                     if len(action) >= 7:
-                        return action[:7].astype(np.float32)
+                        action = action[:7].astype(np.float32)
+                        break
                     elif len(action) == 6:
                         # 如果只有6-DOF，添加gripper
-                        return np.append(action, [0.0]).astype(np.float32)
+                        action = np.append(action, [0.0]).astype(np.float32)
+                        break
         
         # 如果找不到，尝试从多个字段组合
-        if 'ee_pos' in sample and 'ee_rot' in sample:
-            pos = np.array(sample['ee_pos'])
-            rot = np.array(sample['ee_rot'])
-            gripper = sample.get('gripper', [0.0])
-            action = np.concatenate([pos, rot, gripper])[:7]
-            return action.astype(np.float32)
+        if action is None:
+            if 'ee_pos' in sample and 'ee_rot' in sample:
+                pos = np.array(sample['ee_pos'])
+                rot = np.array(sample['ee_rot'])
+                gripper = sample.get('gripper', [0.0])
+                action = np.concatenate([pos, rot, gripper])[:7].astype(np.float32)
+            else:
+                # 默认返回零动作
+                print(f"Warning: Could not find action in sample. Available keys: {list(sample.keys())}")
+                action = np.zeros(7, dtype=np.float32)
         
-        # 默认返回零动作
-        print(f"Warning: Could not find action in sample. Available keys: {list(sample.keys())}")
-        return np.zeros(7, dtype=np.float32)
+        # 改进3: 如果启用四元数，将欧拉角转换为四元数
+        if self.use_quaternion and len(action) == 7:
+            pos = action[:3]  # [x, y, z]
+            euler = action[3:6]  # [roll, pitch, yaw]
+            gripper = action[6:7]  # [gripper]
+            
+            # 欧拉角转四元数
+            quaternion = euler_to_quaternion(euler[0], euler[1], euler[2])  # [qw, qx, qy, qz]
+            
+            # 组合: [x, y, z, qw, qx, qy, qz, gripper]
+            action = np.concatenate([pos, quaternion, gripper]).astype(np.float32)
+        
+        return action
     
     def _extract_language(self, sample) -> str:
         """从样本中提取语言任务描述"""
@@ -391,18 +449,42 @@ class LIBEROHFDataset(Dataset):
         action = self._extract_action(sample)
         action_tensor = torch.from_numpy(action).float()
         
+        # Debug: 打印第一个样本的维度信息
+        if idx == 0:
+            print(f"[DEBUG] Sample 0 - Raw action shape: {action.shape}, use_quaternion: {self.use_quaternion}")
+            print(f"[DEBUG] Sample 0 - Action values: {action}")
+        
         # 改进1: 动作归一化
         if self.normalize_actions and self.action_normalizer is not None:
             action_tensor = self.action_normalizer.normalize(action_tensor)
+            if idx == 0:
+                print(f"[DEBUG] Sample 0 - After normalization shape: {action_tensor.shape}")
         
         # 提取语言任务
         language_task = self._extract_language(sample)
         
+        # 根据是否使用四元数提取 pose
+        if self.use_quaternion:
+            # 四元数模式: [x, y, z, qw, qx, qy, qz, gripper]
+            pose = action_tensor[:7]  # [7] - 3 pos + 4 quat
+            gripper = action_tensor[7:8]  # [1] - gripper
+            if idx == 0:
+                print(f"[DEBUG] Sample 0 - Quaternion mode: action_tensor shape={action_tensor.shape}")
+                print(f"[DEBUG] Sample 0 - pose shape={pose.shape}, gripper shape={gripper.shape}")
+                print(f"[DEBUG] Sample 0 - gripper value={gripper}")
+        else:
+            # 欧拉角模式: [x, y, z, roll, pitch, yaw, gripper]
+            pose = action_tensor[:6]  # [6] - 3 pos + 3 euler
+            gripper = action_tensor[6:7]  # [1] - gripper
+            if idx == 0:
+                print(f"[DEBUG] Sample 0 - Euler mode: action_tensor shape={action_tensor.shape}")
+                print(f"[DEBUG] Sample 0 - pose shape={pose.shape}, gripper shape={gripper.shape}")
+        
         return {
             "images": images,  # [S或T*S, 3, H, W]
-            "action": action_tensor,  # [7] - 可能已归一化
-            "pose": action_tensor[:6],  # [6] - 6-DOF pose
-            "gripper": action_tensor[6:7],  # [1] - gripper
+            "action": action_tensor,  # [7或8] - 可能已归一化
+            "pose": pose,  # [6或7] - 6-DOF欧拉角 或 7-DOF四元数
+            "gripper": gripper,  # [1] - gripper
             "language_task": language_task,
             "episode_idx": idx,
         }
@@ -440,8 +522,8 @@ class LIBEROHFDataset(Dataset):
         
         return {
             "images": torch.stack(batched_images, dim=0),  # [B, S, 3, H, W]
-            "action": torch.stack(batched_actions, dim=0),  # [B, 7]
-            "pose": torch.stack(batched_poses, dim=0),  # [B, 6]
+            "action": torch.stack(batched_actions, dim=0),  # [B, 7或8] - 7=欧拉角, 8=四元数
+            "pose": torch.stack(batched_poses, dim=0),  # [B, 6或7] - 6=欧拉角, 7=四元数
             "gripper": torch.stack(batched_grippers, dim=0),  # [B, 1]
             "language_task": language_tasks,
         }

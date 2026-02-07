@@ -42,6 +42,7 @@ class VLATrainer:
         learning_rate: float = 1e-4,
         weight_decay: float = 0.01,
         num_epochs: int = 50,
+        max_steps: Optional[int] = None,  # 最大训练步数（None表示不限制）
         device: str = "cuda",
         save_dir: str = "./checkpoints",
         log_interval: int = 100,
@@ -64,6 +65,7 @@ class VLATrainer:
         self.model = model.to(device)
         self.device = device
         self.num_epochs = num_epochs
+        self.max_steps = max_steps
         self.save_dir = save_dir
         self.log_interval = log_interval
         self.val_interval = val_interval
@@ -164,12 +166,19 @@ class VLATrainer:
         self.use_wandb = use_wandb
         if self.use_wandb:
             try:
-                # 准备wandb配置
+                # 如果设置了WANDB_API_KEY环境变量，wandb会自动使用它
+                # 无需调用wandb.login()，这样可以支持新格式的API key
+                if 'WANDB_API_KEY' in os.environ and os.environ['WANDB_API_KEY']:
+                    logging.info(f"Using WANDB_API_KEY from environment (first 10 chars: {os.environ['WANDB_API_KEY'][:10]}...)")
+                
+                # 准备wandb配置（过滤掉None值）
+                filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
                 wandb_config = {
                     "project": wandb_project,
-                    "config": kwargs,
+                    "config": filtered_kwargs,
                     "save_code": save_code,  # 保存代码到wandb
                     "resume": resume,  # 如果实验已存在如何处理
+                    "settings": wandb.Settings(_service_wait=300),  # 设置服务等待超时
                 }
                 
                 # 添加可选参数
@@ -194,7 +203,8 @@ class VLATrainer:
                 total_params = sum(p.numel() for p in model_to_log.parameters())
                 trainable_params = sum(p.numel() for p in model_to_log.parameters() if p.requires_grad)
                 
-                wandb.config.update({
+                # 准备配置字典，过滤掉None值
+                config_dict = {
                     "total_parameters": total_params,
                     "trainable_parameters": trainable_params,
                     "frozen_parameters": total_params - trainable_params,
@@ -204,11 +214,16 @@ class VLATrainer:
                     "num_epochs": num_epochs,
                     "warmup_steps": warmup_steps,
                     "gradient_accumulation_steps": gradient_accumulation_steps,
-                })
+                }
+                if max_steps is not None:
+                    config_dict["max_steps"] = max_steps
+                wandb.config.update(config_dict)
                 
                 logging.info(f"Wandb initialized: {wandb.run.url if wandb.run else 'N/A'}")
             except Exception as e:
                 logging.warning(f"Failed to initialize wandb: {e}")
+                import traceback
+                logging.warning(f"Traceback: {traceback.format_exc()}")
                 logging.warning("Continuing training without wandb...")
                 self.use_wandb = False
             
@@ -288,6 +303,11 @@ class VLATrainer:
                 self.optimizer.zero_grad()
                 
                 self.global_step += 1
+                
+                # Check if max_steps reached
+                if self.max_steps is not None and self.global_step >= self.max_steps:
+                    logging.info(f"Reached max_steps ({self.max_steps}), stopping training")
+                    return  # Exit train_epoch early
             
             # Logging (only log when we actually update parameters)
             if (batch_idx + 1) % self.gradient_accumulation_steps == 0 and self.global_step % self.log_interval == 0:
@@ -340,6 +360,10 @@ class VLATrainer:
         # Handle remaining gradients at the end of epoch
         # (if number of batches is not divisible by gradient_accumulation_steps)
         if len(self.train_loader) % self.gradient_accumulation_steps != 0:
+            # Check if max_steps reached before processing remaining gradients
+            if self.max_steps is not None and self.global_step >= self.max_steps:
+                return
+            
             # Gradient clipping
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -351,6 +375,10 @@ class VLATrainer:
             self.optimizer.zero_grad()
             
             self.global_step += 1
+            
+            # Check again after updating step
+            if self.max_steps is not None and self.global_step >= self.max_steps:
+                return
             
     @torch.no_grad()
     def validate(self):
@@ -438,7 +466,10 @@ class VLATrainer:
         is_ddp = isinstance(self.model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel))
         model_to_check = self.model.module if is_ddp else self.model
         
-        logging.info(f"Starting training for {self.num_epochs} epochs")
+        if self.max_steps is not None:
+            logging.info(f"Starting training for up to {self.max_steps} steps")
+        else:
+            logging.info(f"Starting training for {self.num_epochs} epochs")
         logging.info(f"Trainable parameters: {sum(p.numel() for p in model_to_check.parameters() if p.requires_grad):,}")
         logging.info(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
         logging.info(f"Warmup steps: {self.warmup_steps}")
@@ -446,11 +477,21 @@ class VLATrainer:
         for epoch in range(self.num_epochs):
             self.epoch = epoch
             
+            # Check if max_steps reached before starting new epoch
+            if self.max_steps is not None and self.global_step >= self.max_steps:
+                logging.info(f"Reached max_steps ({self.max_steps}) at epoch {epoch}, stopping training")
+                break
+            
             # Set epoch for distributed sampler
             if hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
             
             self.train_epoch()
+            
+            # Check if max_steps reached after epoch
+            if self.max_steps is not None and self.global_step >= self.max_steps:
+                logging.info(f"Reached max_steps ({self.max_steps}) after epoch {epoch}, stopping training")
+                break
             
             # Final validation at end of epoch
             if self.val_loader is not None:
@@ -459,8 +500,8 @@ class VLATrainer:
                 
             # Save epoch checkpoint
             self.save_checkpoint(f"checkpoint_epoch_{epoch}.pt")
-            
-        logging.info("Training completed!")
+        
+        logging.info(f"Training completed! Final step: {self.global_step}")
         
     def save_checkpoint(self, filename: str):
         """Save training checkpoint"""

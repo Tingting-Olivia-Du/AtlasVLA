@@ -1,9 +1,8 @@
 #!/bin/bash
 # Atlas VLA 统一训练脚本
 # 支持HuggingFace数据和本地数据，单GPU和多GPU训练
-'''
-bash atlas/scripts/train.sh
-'''
+# conda activate atlas
+# Usage: bash atlas/scripts/train.sh
 
 set -e  # 遇到错误立即退出
 
@@ -11,7 +10,12 @@ set -e  # 遇到错误立即退出
 
 # GPU设置（使用哪些GPU，例如 "0,1,2,3"）
 # 如果为空，使用所有可用GPU
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+
+# WandB设置（可选，如果不设置会使用全局登录）
+# 去 https://wandb.ai/authorize 获取你的 API key
+WANDB_API_KEY="${WANDB_API_KEY:-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}"  # 设置你的 wandb API key
+WANDB_ENTITY="${WANDB_ENTITY:-tingtingdu06-uw-madison}"  # 你的 wandb 用户名
 
 # 训练配置文件路径（相对于项目根目录）
 CONFIG_PATH="${CONFIG_PATH:-atlas/configs/train_config.yaml}"
@@ -71,6 +75,16 @@ else
     # 自动检测GPU数量
     NUM_GPUS=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "1")
     echo "自动检测到 $NUM_GPUS 个GPU"
+fi
+
+# 设置 WandB 环境变量（如果提供）
+if [ -n "$WANDB_API_KEY" ]; then
+    export WANDB_API_KEY
+    echo "✓ WandB API key 已设置"
+fi
+if [ -n "$WANDB_ENTITY" ]; then
+    export WANDB_ENTITY
+    echo "✓ WandB entity: $WANDB_ENTITY"
 fi
 
 # 准备训练命令参数
