@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 
 # WandB设置（可选，如果不设置会使用全局登录）
 # 去 https://wandb.ai/authorize 获取你的 API key
-WANDB_API_KEY="${WANDB_API_KEY:-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}"  # 设置你的 wandb API key
+WANDB_API_KEY="${WANDB_API_KEY:-YOUR_WANDB_API_KEY}"  # 设置你的 wandb API key
 WANDB_ENTITY="${WANDB_ENTITY:-tingtingdu06-uw-madison}"  # 你的 wandb 用户名
 
 # 训练配置文件路径（相对于项目根目录）
