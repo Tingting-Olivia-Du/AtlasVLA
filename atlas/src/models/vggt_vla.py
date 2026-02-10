@@ -24,8 +24,8 @@ except ImportError:
 
 from .geometry_encoder import GeometryFeatureExtractor
 from .fusion import MultimodalFusion
-from .action_head import ActionHead
-
+# from .action_head import ActionHead # 修改
+from .flow_matching_action_head import FlowMatchingActionHead
 
 class VGGTVLA(nn.Module):
     """
@@ -206,10 +206,16 @@ class VGGTVLA(nn.Module):
         # 5. Action prediction head
         # 改进3: 支持四元数表示
         use_quaternion = kwargs.get("use_quaternion", False)
-        self.action_head = ActionHead(
+        self.action_head = FlowMatchingActionHead(
+            action_dim=7,
+            action_horizon=16,  # 预测未来16步
             input_dim=fusion_hidden_dim,
-            action_dim=action_dim,
-            use_quaternion=use_quaternion
+            use_token_context=True,  # 利用token序列而不是单向量
+            hidden_dim=256,
+            num_layers=4,
+            num_inference_steps=10,
+            ode_solver="midpoint",  # 比euler更准确
+            cfg_scale=1.5,  # Classifier-Free Guidance
         )
         
     def forward(self, images, language_instruction, return_intermediates=False):

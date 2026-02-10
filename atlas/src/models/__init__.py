@@ -1,13 +1,25 @@
+"""
+VGGT-based VLA Models
+"""
+
 from .vggt_vla import VGGTVLA
-from .geometry_encoder import GeometryFeatureExtractor
-from .fusion import MultimodalFusion
+from .geometry_encoder import (
+    EnhancedGeometryFeatureExtractor,
+    create_geometry_encoder,
+)
+from .fusion import MultimodalFusion, BidirectionalFusion
 from .action_head import ActionHead
-from .diffusion_action_head import DiffusionActionHead
+
+from .flow_matching_action_head import FlowMatchingActionHead, TemporalEnsemble
 
 __all__ = [
     "VGGTVLA",
-    "GeometryFeatureExtractor",
+    "EnhancedGeometryFeatureExtractor",
+    "create_geometry_encoder",
     "MultimodalFusion",
-    "ActionHead",
-    "DiffusionActionHead",
+    "BidirectionalFusion",
+    # "ActionHead",
+    # "DiffusionActionHead",
+    "FlowMatchingActionHead",
+    "TemporalEnsemble",
 ]
