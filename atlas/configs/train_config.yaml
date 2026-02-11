@@ -1,111 +1,285 @@
-# Training configuration for Atlas VLA
+# Training configuration for VGGT-VLA (Optimized Architecture)
+# 基于Flow Matching + Enhanced Geometry + Bidirectional Fusion
 # bash atlas/scripts/train.sh
 
-# Model configuration
+# ============================================================================
+# Model Configuration
+# ============================================================================
 model:
+  # ---------- VGGT Backbone ----------
   vggt_checkpoint: "facebook/VGGT-1B"
-  lang_encoder_name: "meta-llama/Meta-Llama-3-8B"  # 更新为Llama-3-8B
-  freeze_vggt: true
-  freeze_lang_encoder: true
-  geom_output_dim: 512
-  fusion_hidden_dim: 1024
-  action_dim: 8  # 7 for 欧拉角，8 for 四元数
-  use_pointnet: true
-  use_pose: true
-  # 改进3: 四元数表示选项
-  use_quaternion: true  # 是否使用四元数表示旋转（推荐true，避免欧拉角奇异性）
-  # 改进2: Diffusion Head选项
-  use_diffusion_head: true  # 是否使用Diffusion Action Head（默认false，使用传统回归head）
-  # 改进5: Fusion模块改进
-  use_attention_pooling: true  # 是否使用attention pooling（推荐true）
+  freeze_vggt: true  # Stage 1: Freeze; Stage 3: Unfreeze (如果数据足够)
+  
+  # ---------- Language Encoder ----------
+  lang_encoder_name: "meta-llama/Meta-Llama-3-8B"
+  freeze_lang_encoder: true  # Stage 1: Freeze; Stage 2: Unfreeze
+  
+  # ---------- Enhanced Geometry Encoder ----------
+  geometry_encoder:
+    # 预设配置: "full", "temporal_only", "spatial_only", "minimal"
+    config: "temporal_only"  # 推荐开始配置（不用PointNet，节省显存）
+    
+    # 自定义参数（如果不用预设config，可以手动指定）
+    token_dim: 2048  # VGGT token维度
+    output_dim: 512  # 几何特征输出维度
+    num_fusion_layers: 3  # 使用VGGT最后3层特征
+    
+    # 功能开关
+    use_temporal: true  # ⭐ 时序建模（重要！）
+    use_spatial_attn: false  # 空间注意力（可选，增加计算）
+    use_pointnet: false  # PointNet（初始关闭，后续ablation）
+    use_pose: true  # 相机位姿编码
+    
+    # 详细参数
+    temporal_layers: 2  # 时序Transformer层数
+    spatial_queries: 8  # 空间attention queries数量（如果启用）
+  
+  # ---------- Multimodal Fusion ----------
+  fusion:
+    type: "bidirectional"  # "bidirectional" or "multimodal"
+    lang_dim: 4096  # LLaMA-3-8B hidden dim
+    geom_dim: 512   # Geometry encoder output dim
+    hidden_dim: 1024  # Fusion hidden dim
+    num_layers: 4  # Fusion transformer层数
+    num_heads: 16
+    num_perceiver_queries: 32  # Perceiver聚合queries数量
+    dropout: 0.1
+  
+  # ---------- Action Head (Flow Matching) ----------
+  action_head:
+    type: "flow_matching"  # ⭐ 推荐！"flow_matching", "diffusion", "mlp"
+    
+    # 动作空间配置
+    action_dim: 7  # 6-DOF + 1 gripper
+    action_horizon: 16  # ⭐ Action Chunking: 预测未来16步
+    
+    # Flow Matching 参数
+    input_dim: 1024  # 来自fusion module
+    use_token_context: true  # 使用token序列而非单向量
+    hidden_dim: 256  # DiT hidden dim
+    num_layers: 4    # DiT层数
+    num_heads: 8
+    mlp_ratio: 4.0
+    
+    # 推理配置
+    num_inference_steps: 10  # ODE求解步数（10步足够）
+    ode_solver: "midpoint"  # "euler", "midpoint", "rk4"
+    
+    # Classifier-Free Guidance
+    cfg_scale: 1.5  # >1.0启用CFG，提升性能
+    cfg_dropout_prob: 0.1  # 训练时condition dropout概率
 
-# HuggingFace authentication
+# ============================================================================
+# HuggingFace Authentication
+# ============================================================================
 huggingface:
-  # HuggingFace token (用于访问私有模型)
-  token: null  # 你的HuggingFace token
-  # 或者设置为null，使用环境变量HF_TOKEN或通过huggingface-cli login
-  # token: null
+  token: null  # 设置环境变量 HF_TOKEN 或使用 huggingface-cli login
 
-# Data configuration
+# ============================================================================
+# Data Configuration
+# ============================================================================
 data:
-  # 数据源选择：HuggingFace或本地数据
-  use_huggingface: true  # true = 使用HuggingFace数据（推荐），false = 使用本地HDF5转换后的数据
+  # ---------- 数据源 ----------
+  use_huggingface: true  # HuggingFace dataset（推荐）
+  hf_dataset_name: "lerobot/libero_spatial_image"
+  streaming: false  # 下载并缓存
+  hf_cache_dir: null  # 使用默认缓存
   
-  # HuggingFace数据配置（当use_huggingface=true时使用）
-  # hf_dataset_name: "physical-intelligence/libero"
-  hf_dataset_name: "lerobot/libero_spatial_image"  # HuggingFace数据集名称（LIBERO-Spatial子集，10个空间推理任务，53k帧）
-  streaming: false  # false = 下载并缓存，true = 流式加载（节省内存但需要网络）
-  hf_cache_dir: null  # HuggingFace缓存目录（null = 使用默认）
+  # 本地数据（use_huggingface=false时）
+  data_dir: "./dataset"
   
-  # 本地数据配置（当use_huggingface=false时使用）
-  data_dir: "./dataset"  # LIBERO数据集路径（相对于项目根目录，HDF5转换后的格式）
-  
-  # 通用配置
+  # ---------- 数据集划分 ----------
   train_split: "train"
-  val_split: null  # HuggingFace数据通常只有train，设为null跳过验证集
-  image_size: 518  # VGGT input size (原始图像256x256会被resize到518x518)
+  val_split: null  # LIBERO通常只有train
+  
+  # ---------- 图像配置 ----------
+  image_size: 518  # VGGT输入尺寸
   use_wrist_camera: true
-  batch_size: 8  # 降低以避免 OOM
-  num_workers: 0  # 禁用多进程，避免死锁
-  # 改进4: 多帧时序训练配置
-  num_temporal_frames: 2  # 时序帧数（降低以节省显存）
-  temporal_stride: 2  # 帧之间的步长
-  # 改进1: 动作归一化配置
-  normalize_actions: true  # 是否归一化动作（推荐true，解决尺度差异问题）
-  action_stats_path: null  # 动作统计信息文件路径（null=自动计算）
+  
+  # ---------- 时序配置 ----------
+  num_temporal_frames: 3  # ⭐ S=3帧历史（重要！）
+  temporal_stride: 1  # 连续帧（stride=1）
+  
+  # ---------- Action配置 ----------
+  action_horizon: 16  # 与action_head保持一致
+  normalize_actions: true  # ⭐ 归一化动作（重要！）
+  action_stats_path: null  # 自动计算统计量
+  
+  # ---------- DataLoader ----------
+  batch_size: 4  # 降低batch size（Flow Matching显存占用较大）
+  num_workers: 4  # 数据加载进程数
+  pin_memory: true
 
-# Training configuration
+# ============================================================================
+# Training Configuration (Multi-Stage Strategy)
+# ============================================================================
 training:
+  # ---------- 训练策略 ----------
+  # Stage 1: Warmup (当前配置)
+  #   - freeze_vggt=true, freeze_lang_encoder=true
+  #   - 只训练 Geometry Encoder + Fusion + Action Head
+  #   - 快速建立模态对齐
+  
+  # Stage 2: Fine-tune Language (修改freeze_lang_encoder=false)
+  #   - freeze_vggt=true, freeze_lang_encoder=false
+  #   - 优化语言理解能力
+  
+  # Stage 3: Full Fine-tune (可选，需要大量数据)
+  #   - freeze_vggt=false, freeze_lang_encoder=false
+  #   - 端到端优化
+  
+  # ---------- 基本参数 ----------
   num_epochs: 50
-  max_steps: null  # 最大训练步数（null表示不限制，基于epoch训练；设置数值时会在达到该步数时提前停止）
-  # 改进7: 超参数调整
-  learning_rate: 0.00005  # 降低学习率（从0.0001降到0.00005）以提高训练稳定性
-  weight_decay: 0.001  # 降低weight_decay（从0.01降到0.001）减少正则化强度
-  warmup_steps: 2000  # 增加warmup步数（从1000到2000）让学习率更平滑地增长
-  gradient_accumulation_steps: 4  # 梯度累积，有效 batch_size = 2×4 = 8
+  max_steps: null  # 或设置具体步数，如 50000
   
-  # Loss weights
+  # ---------- 优化器 ----------
+  learning_rate: 1e-4  # Stage 1: 1e-4; Stage 2: 1e-5; Stage 3: 1e-6
+  weight_decay: 0.01
+  warmup_steps: 1000  # Warmup步数
+  gradient_accumulation_steps: 8  # 有效batch = 4×8 = 32
+  max_grad_norm: 1.0  # 梯度裁剪
+  
+  # ---------- 学习率调度 ----------
+  scheduler:
+    type: "cosine"  # "cosine" or "linear"
+    eta_min: 1e-6  # Cosine最小学习率
+  
+  # ---------- 混合精度训练 ----------
+  use_amp: true  # 自动混合精度（节省显存）
+  
+  # ---------- Loss Configuration ----------
   loss:
-    pose_weight: 1.0
-    gripper_weight: 0.5
-    pose_loss_type: "smooth_l1"  # "l1", "l2", or "smooth_l1"
-    gripper_loss_type: "l1"  # "l1" or "bce"
-    # 改进6: 辅助损失配置
-    use_auxiliary_loss: false  # 是否启用辅助损失（默认关闭，可根据需要开启）
-    geom_consistency_weight: 0.1  # 几何一致性损失权重
-    feature_reg_weight: 0.01  # 特征正则化损失权重
+    # Flow Matching的loss在action head内部计算
+    # 这里只配置辅助损失
+    
+    # 辅助损失（可选）
+    use_auxiliary_loss: false  # 初始关闭，稳定后可开启
+    geom_consistency_weight: 0.1  # 几何一致性损失
+    feature_reg_weight: 0.01  # 特征正则化损失
   
-  # Logging intervals
-  log_interval: 100
-  val_interval: 10000
-  save_interval: 10000
+  # ---------- Logging Intervals ----------
+  log_interval: 100  # 每100步log一次
+  val_interval: 1000  # 每1000步验证一次
+  save_interval: 5000  # 每5000步保存checkpoint
 
+# ============================================================================
 # Checkpointing
+# ============================================================================
 checkpoint:
   save_dir: "./checkpoints"
-  resume_from: null  # Path to checkpoint to resume from
+  resume_from: null  # 恢复训练: "checkpoints/checkpoint_step_10000.pt"
+  save_best: true  # 保存最佳模型
+  save_last: true  # 保存最新模型
+  save_every_n_steps: 5000  # 定期保存
 
-# Logging configuration
+# ============================================================================
+# Logging
+# ============================================================================
 logging:
-  # 是否保存训练日志到文件
   save_to_file: true
-  # 日志文件保存路径（null = 自动生成，格式: logs/train_YYYYMMDD_HHMMSS.log）
-  log_file: null  # 例如: "logs/train.log" 或 null 自动生成
-  # 日志目录（如果log_file为null，会在此目录下自动生成日志文件）
+  log_file: null  # 自动生成
   log_dir: "./logs"
-  # 是否同时输出到控制台
   console_output: true
+  level: "INFO"  # "DEBUG", "INFO", "WARNING", "ERROR"
 
-# Experiment tracking with Weights & Biases (wandb)
+# ============================================================================
+# Weights & Biases
+# ============================================================================
 wandb:
-  enabled: true  # 启用 wandb 记录
-  project: "Atlas"  # wandb项目名称
-  entity: "tingtingdu06-uw-madison"  # 你的wandb用户名/团队名
-  name: null  # 实验名称（留空自动生成，格式: atlas-vla-YYYYMMDD-HHMMSS）
-  tags: []  # 实验标签，例如: ["baseline", "vggt-frozen"]
-  notes: ""  # 实验备注/描述
-  save_code: true  # 是否保存代码到wandb
-  resume: "allow"  # 如果实验已存在，如何处理: "allow", "must", "never", "auto"
+  enabled: true
+  project: "VGGT-VLA"  # 项目名
+  entity: "tingtingdu06-uw-madison"
+  name: null  # 自动生成，格式: vggt-vla-YYYYMMDD-HHMMSS
+  tags: 
+    - "flow-matching"  # 使用Flow Matching
+    - "temporal-only"  # Geometry encoder配置
+    - "bidirectional-fusion"  # Fusion类型
+    - "action-chunking-16"  # Action horizon
+    - "stage-1"  # 训练阶段
+  notes: |
+    VGGT-VLA with optimized architecture:
+    - Flow Matching action head (10 inference steps)
+    - Enhanced Geometry Encoder (temporal modeling)
+    - Bidirectional Fusion
+    - Action Chunking (16 steps)
+    - Stage 1: Warmup training with frozen backbones
+  save_code: true
+  resume: "allow"
 
-# Device
+# ============================================================================
+# Evaluation (推理时使用)
+# ============================================================================
+evaluation:
+  # Temporal Ensemble配置
+  use_temporal_ensemble: true
+  ensemble_decay: 0.01
+  
+  # 采样配置
+  num_inference_steps: 10  # 推理步数
+  ode_solver: "midpoint"
+  
+  # Multi-sample (可选，用于uncertainty estimation)
+  num_samples: 1  # >1时会采样多个候选动作
+
+# ============================================================================
+# Device & Distributed Training
+# ============================================================================
 device: "cuda"
+distributed:
+  enabled: false  # 多GPU训练
+  backend: "nccl"
+  world_size: 1
+  
+# ============================================================================
+# Ablation Study Configurations (实验配置)
+# ============================================================================
+# 以下是不同实验配置的模板，可以通过命令行覆盖
+
+# 实验1: Minimal baseline (快速验证)
+# --config.model.geometry_encoder.config=minimal
+# --config.model.fusion.type=multimodal
+# --config.model.action_head.type=mlp
+
+# 实验2: + Temporal modeling
+# --config.model.geometry_encoder.config=temporal_only
+# --config.model.geometry_encoder.use_temporal=true
+
+# 实验3: + Flow Matching (当前配置)
+# --config.model.action_head.type=flow_matching
+# --config.model.action_head.action_horizon=16
+
+# 实验4: + Bidirectional Fusion (当前配置)
+# --config.model.fusion.type=bidirectional
+
+# 实验5: + Spatial Attention
+# --config.model.geometry_encoder.use_spatial_attn=true
+# --config.model.geometry_encoder.config=full
+
+# 实验6: + PointNet
+# --config.model.geometry_encoder.use_pointnet=true
+
+# ============================================================================
+# Notes & Tips
+# ============================================================================
+# 1. 训练顺序建议:
+#    Stage 1 (当前配置) → Stage 2 (unfreeze lang) → Stage 3 (unfreeze all)
+#
+# 2. 显存优化:
+#    - 降低 batch_size (当前=4)
+#    - 降低 action_horizon (16→8)
+#    - 降低 num_temporal_frames (3→2)
+#    - 使用 gradient_checkpointing (需要在代码中启用)
+#
+# 3. 性能优化:
+#    - 增加 num_inference_steps 提升质量 (10→20)
+#    - 使用 cfg_scale>1.0 增强条件引导
+#    - 使用 temporal_ensemble 平滑动作
+#
+# 4. Ablation study:
+#    - 依次启用各个组件，对比性能
+#    - 记录每个配置的训练时间和性能指标
+#
+# 5. 数据增强 (需要在代码中实现):
+#    - Color jitter
+#    - Random crop
+#    - Action noise
