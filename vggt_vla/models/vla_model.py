@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 from typing import List, Dict, Tuple, Optional
 
-from .vision_encoder import DirectVisionEncoder
+from .vision_encoder import VisionEncoder
 from .language_encoder import LanguageEncoder
-from .vggt_backbone import VGGTBackbone
+from .vggt_adapter import VGGTAdapter, SimpleVGGTBackbone
 from .action_head import MLPActionHead, ActionHeadWithSpatialFeatures
 
 
@@ -16,18 +16,47 @@ class VLAModel(nn.Module):
         super().__init__()
         self.config = config
         
-        self.vision_encoder = DirectVisionEncoder(config.vision)
-        self.language_encoder = LanguageEncoder(config.language)
-        self.vggt_backbone = VGGTBackbone(config.vggt)
+        print("=" * 60)
+        print("Initializing VLA Model")
+        print("=" * 60)
         
-        if hasattr(config.action_head, 'use_spatial_features') and            config.action_head.use_spatial_features:
+        # Vision Encoder
+        print("\n[1/4] Vision Encoder")
+        self.vision_encoder = VisionEncoder(config.vision)
+        if config.vision.use_vision_tower:
+            print(f"  ✓ Using vision tower: {config.vision.vision_tower_name}")
+        else:
+            print(f"  ✓ Using direct patch embedding")
+        
+        # Language Encoder
+        print("\n[2/4] Language Encoder")
+        self.language_encoder = LanguageEncoder(config.language)
+        
+        # VGGT Backbone
+        print("\n[3/4] VGGT Backbone")
+        if config.vggt.use_pretrained_vggt:
+            print("  Using facebook/vggt from HuggingFace")
+            self.vggt_backbone = VGGTAdapter(config.vggt)
+        else:
+            print("  Using simplified VGGT implementation")
+            self.vggt_backbone = SimpleVGGTBackbone(config.vggt)
+        
+        # Action Head
+        print("\n[4/4] Action Head")
+        if hasattr(config.action_head, 'use_spatial_features') and config.action_head.use_spatial_features:
             self.action_head = ActionHeadWithSpatialFeatures(config.action_head)
+            print("  ✓ Using spatial attention action head")
         else:
             self.action_head = MLPActionHead(config.action_head)
+            print("  ✓ Using MLP action head")
         
         self.use_spatial_action_head = isinstance(
             self.action_head, ActionHeadWithSpatialFeatures
         )
+        
+        print("\n" + "=" * 60)
+        print("VLA Model Initialized Successfully")
+        print("=" * 60 + "\n")
     
     def forward(
         self, 

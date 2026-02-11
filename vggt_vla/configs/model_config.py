@@ -3,17 +3,24 @@ from typing import Optional, Literal
 
 @dataclass
 class VisionConfig:
-    """视觉编码器配置 - 方案B: 直接使用原始图像"""
+    """视觉编码器配置"""
     img_size: int = 224
-    patch_size: int = 16  # VGGT 默认
+    patch_size: int = 16
     in_channels: int = 3
     embed_dim: int = 768
+    
+    # Vision tower 选项
+    use_vision_tower: bool = False  # 是否使用预训练 vision tower
+    vision_tower_name: str = "facebook/dinov2-base"  # 可选: facebook/dinov2-base, openai/clip-vit-base-patch16, google/siglip-base-patch16-224
+    freeze_vision_tower: bool = True
+    
+    # 直接patch embedding (当 use_vision_tower=False 时使用)
     use_pretrained_patch_embed: bool = False
     
 @dataclass
 class LanguageConfig:
     """语言编码器配置"""
-    model_name: str = "Qwen/Qwen2-0.5B"  # 使用 Qwen2-0.5B 替代 Qwen3
+    model_name: str = "Qwen/Qwen3-0.6B-Base"  # 使用 Qwen3-0.6B-Base
     max_length: int = 77
     freeze_encoder: bool = True
     use_lora: bool = False
@@ -28,7 +35,11 @@ class VGGTConfig:
     num_heads: int = 12
     mlp_ratio: float = 4.0
     
-    # Graph structure
+    # 是否使用 HuggingFace 的 facebook/vggt
+    use_pretrained_vggt: bool = True  # True: 从HF加载, False: 使用简化实现
+    freeze_vggt: bool = False  # 是否冻结VGGT参数
+    
+    # Graph structure (用于简化版VGGT)
     graph_type: Literal['grid', 'knn', 'fully_connected'] = 'grid'
     k_neighbors: int = 9
     

@@ -21,7 +21,9 @@ class Trainer:
         scheduler,
         config,
         device: str = 'cuda',
-        log_dir: str = './logs'
+        log_dir: str = './logs',
+        grad_clip: float = 1.0,
+        save_freq: int = 10
     ):
         self.model = model
         self.train_loader = train_loader
@@ -30,6 +32,8 @@ class Trainer:
         self.scheduler = scheduler
         self.config = config
         self.device = device
+        self.grad_clip = grad_clip
+        self.save_freq = save_freq
         
         self.writer = SummaryWriter(log_dir)
         self.log_dir = log_dir
@@ -55,7 +59,8 @@ class Trainer:
             loss = action_loss_fn(actions_pred, actions_gt, self.config)
             
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            if self.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.optimizer.step()
             
             total_loss += loss.item()
@@ -122,10 +127,11 @@ class Trainer:
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.save_checkpoint('best_model.pth')
-                print(f"  Saved best model (val_loss: {val_loss:.4f})")
+                print(f"  ✓ Saved best model (val_loss: {val_loss:.4f})")
             
-            if (epoch + 1) % 10 == 0:
-                self.save_checkpoint(f'checkpoint_epoch_{epoch}.pth')
+            if (epoch + 1) % self.save_freq == 0:
+                self.save_checkpoint(f'checkpoint_epoch_{epoch+1}.pth')
+                print(f"  ✓ Saved checkpoint at epoch {epoch+1}")
         
         print("Training complete!")
         self.writer.close()

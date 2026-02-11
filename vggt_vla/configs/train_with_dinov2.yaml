@@ -1,0 +1,38 @@
+# 使用 DINOv2 vision tower 的配置
+# 更好的视觉特征，但训练较慢
+
+# Dataset
+dataset_repo: "lerobot/libero_spatial_image"
+task_names: null
+cache_dir: "./data/hf_cache"
+
+# Training
+batch_size: 24  # 降低batch size因为模型更大
+num_epochs: 100
+lr: 5.0e-5
+weight_decay: 1.0e-5
+num_workers: 4
+grad_clip: 1.0
+
+# Model - With Vision Tower
+use_vision_tower: true
+vision_tower_name: "facebook/dinov2-base"  # 可选: dinov2-small, dinov2-large
+freeze_vision_tower: true
+
+use_pretrained_vggt: false
+freeze_vggt: false
+freeze_language: true
+
+language_model: "Qwen/Qwen3-0.6B-Base"
+
+action_horizon: 10
+action_dim: 7
+
+# Logging
+log_dir: "./logs"
+exp_name: "vla_dinov2"
+save_freq: 10
+
+# System
+device: "cuda"
+seed: 42

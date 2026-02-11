@@ -1,5 +1,5 @@
 """
-语言编码器 - 使用 Qwen2-0.5B
+语言编码器 - 使用 Qwen3-0.6B-Base
 """
 import torch
 import torch.nn as nn
@@ -11,22 +11,41 @@ class LanguageEncoder(nn.Module):
         super().__init__()
         self.config = config
         
-        # Load Qwen2 model
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            config.model_name,
-            trust_remote_code=True
-        )
+        # Load Qwen3 model
+        print(f"Loading language model: {config.model_name}")
         
-        self.language_model = AutoModel.from_pretrained(
-            config.model_name,
-            trust_remote_code=True
-        )
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                config.model_name,
+                trust_remote_code=True
+            )
+        except Exception as e:
+            print(f"Warning: Could not load tokenizer from {config.model_name}: {e}")
+            print("Falling back to Qwen2-0.5B...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                "Qwen/Qwen2-0.5B",
+                trust_remote_code=True
+            )
+        
+        try:
+            self.language_model = AutoModel.from_pretrained(
+                config.model_name,
+                trust_remote_code=True
+            )
+        except Exception as e:
+            print(f"Warning: Could not load model from {config.model_name}: {e}")
+            print("Falling back to Qwen2-0.5B...")
+            self.language_model = AutoModel.from_pretrained(
+                "Qwen/Qwen2-0.5B",
+                trust_remote_code=True
+            )
         
         self.language_hidden_size = self.language_model.config.hidden_size
         
-        # Projector
+        # Projector: 将language model的hidden size投影到目标维度
         self.projector = nn.Sequential(
             nn.Linear(self.language_hidden_size, config.output_dim),
+            nn.LayerNorm(config.output_dim),
             nn.GELU(),
             nn.Linear(config.output_dim, config.output_dim),
             nn.LayerNorm(config.output_dim)
@@ -35,7 +54,7 @@ class LanguageEncoder(nn.Module):
         if config.freeze_encoder:
             for param in self.language_model.parameters():
                 param.requires_grad = False
-            print("Language encoder frozen")
+            print(f"✓ Language encoder frozen ({config.model_name})")
         
         # 1D Positional encoding
         self.max_length = config.max_length
@@ -43,6 +62,11 @@ class LanguageEncoder(nn.Module):
             torch.zeros(1, config.max_length, config.output_dim)
         )
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        
+        print(f"✓ Language encoder initialized: {config.model_name}")
+        print(f"  - Hidden size: {self.language_hidden_size}")
+        print(f"  - Output dim: {config.output_dim}")
+        print(f"  - Max length: {config.max_length}")
         
     def forward(self, texts: List[str]) -> Tuple[torch.Tensor, torch.Tensor, dict]:
         # Tokenize

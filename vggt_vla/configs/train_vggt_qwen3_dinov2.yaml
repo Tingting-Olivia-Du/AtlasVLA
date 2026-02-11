@@ -1,0 +1,50 @@
+# 完整配置: facebook/vggt + Qwen3-0.6B-Base + DINOv2
+# 单帧输入 + 语言指令 + 预训练视觉特征
+
+# Dataset
+dataset_repo: "lerobot/libero_spatial_image"
+task_names: null
+cache_dir: "./data/hf_cache"
+
+# Training
+batch_size: 12  # 更小的batch size因为模型更大
+num_epochs: 100
+lr: 2.0e-5
+weight_decay: 1.0e-5
+num_workers: 4
+grad_clip: 1.0
+
+# Model Configuration
+# Vision: DINOv2 预训练视觉特征
+use_vision_tower: true
+vision_tower_name: "facebook/dinov2-base"
+freeze_vision_tower: true
+
+# Language: Qwen3-0.6B-Base
+language_model: "Qwen/Qwen3-0.6B-Base"
+freeze_language: true
+
+# VGGT: 使用原始的 facebook/vggt
+use_pretrained_vggt: true  # ✅ 从HuggingFace加载
+freeze_vggt: true  # 冻结VGGT
+
+# Action
+action_horizon: 10
+action_dim: 7
+
+# Logging
+log_dir: "./logs"
+exp_name: "vla_vggt_qwen3_dinov2_single_frame"
+save_freq: 5
+
+# System
+device: "cuda"
+seed: 42
+
+# 说明:
+# - 完整的预训练模型组合
+# - facebook/vggt (视觉-几何理解)
+# - DINOv2 (强大的视觉特征)
+# - Qwen3-0.6B-Base (语言理解)
+# - 单帧输入处理
+# - 所有预训练模型都冻结，只训练适配层
