@@ -9,7 +9,7 @@ echo "=================================="
 
 # 设置默认值
 CONFIG=${1:-"configs/train_simple.yaml"}
-DEVICE=${2:-"cuda"}
+DEVICE=${2:-"cuda:0"}
 
 echo "Config: $CONFIG"
 echo "Device: $DEVICE"

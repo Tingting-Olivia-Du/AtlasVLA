@@ -7,7 +7,7 @@ task_names: null  # null = all tasks
 cache_dir: "./data/hf_cache"
 
 # Training
-batch_size: 32
+batch_size: 4
 num_epochs: 100
 lr: 1.0e-4
 weight_decay: 1.0e-5
@@ -16,10 +16,10 @@ grad_clip: 1.0
 
 # Model - Simple Configuration
 use_vision_tower: false  # 直接 patch embedding
-use_pretrained_vggt: false  # 简化版 VGGT
+use_pretrained_vggt: true # 简化版 VGGT
 freeze_language: true  # 冻结语言模型
 
-language_model: "Qwen/Qwen2-0.5B"  # 如果 Qwen3-0.6B 不可用，fallback
+language_model: "Qwen/Qwen3-0.6B-Base"  # 如果 Qwen3-0.6B 不可用，fallback
 
 action_horizon: 10
 action_dim: 7
