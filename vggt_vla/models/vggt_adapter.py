@@ -1,69 +1,86 @@
 """
-VGGT Adapter - 从 HuggingFace 加载 facebook/vggt 并适配到 VLA 任务
+VGGT Adapter - 加载官方 facebook/VGGT-1B 权重并适配到 VLA 任务
 专门处理单帧输入 + 语言指令
+
+官方权重通过 model.pt 下载（与 vggt demo 一致），非 Transformers AutoModel。
 """
+import os
+import sys
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional
-from transformers import AutoModel
+
+# 官方 VGGT-1B 权重 URL（与 vggt 仓库 demo 一致）
+VGGT_1B_WEIGHTS_URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+
+
+def _get_vggt_module():
+    """导入本地 vggt 包中的 VGGT 类"""
+    vggt_path = os.path.join(os.path.dirname(__file__), '../../vggt')
+    if vggt_path not in sys.path:
+        sys.path.insert(0, vggt_path)
+    from vggt.models.vggt import VGGT
+    return VGGT
 
 
 class VGGTAdapter(nn.Module):
     """
-    适配 facebook/vggt 到 VLA 任务:
+    适配 facebook/VGGT-1B 到 VLA 任务:
     1. ✅ 处理单帧输入 (原始VGGT设计用于视频序列，我们适配为单帧)
     2. ✅ 注入 language tokens (通过特殊的融合机制)
     3. ✅ 提取适合 action prediction 的特征
-    
-    关键改进:
-    - 单帧图像被扩展为伪视频序列 [B, 1, 3, H, W] 以适配VGGT
-    - Language tokens通过attention机制与visual features交互
-    - 使用learnable action queries提取任务相关特征
+
+    官方权重加载方式：本地 VGGT 结构 + 下载 model.pt 的 state_dict（与官方 demo 一致）。
     """
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
-        # 加载预训练的 VGGT
+
         print("\n" + "="*60)
-        print("Loading facebook/vggt from HuggingFace...")
+        print("Loading official facebook/VGGT-1B weights...")
         print("="*60)
+
+        VGGT = _get_vggt_module()
+
+        # 官方 VGGT-1B 结构（与官方 repo 一致，才能正确加载 state_dict）
+        self.vggt = VGGT(
+            img_size=518,
+            patch_size=14,
+            embed_dim=1024,
+            enable_camera=True,
+            enable_point=True,
+            enable_depth=True,
+            enable_track=True,
+        )
+        self.use_pretrained_vggt = False
+
         try:
-            self.vggt = AutoModel.from_pretrained(
-                "facebook/vggt",
-                trust_remote_code=True
+            state_dict = torch.hub.load_state_dict_from_url(
+                VGGT_1B_WEIGHTS_URL,
+                map_location="cpu",
+                progress=True,
             )
-            print("✓ Successfully loaded facebook/vggt from HuggingFace")
+            # 若返回的是包装 dict（如 {'model': state_dict}），则取出
+            if isinstance(state_dict, dict) and "model" in state_dict and len(state_dict) == 1:
+                state_dict = state_dict["model"]
+            self.vggt.load_state_dict(state_dict, strict=True)
             self.use_pretrained_vggt = True
+            print("✓ Loaded official facebook/VGGT-1B weights from HuggingFace (model.pt)")
         except Exception as e:
-            print(f"⚠ Warning: Could not load facebook/vggt from HuggingFace: {e}")
-            print("Falling back to local VGGT implementation...")
-            try:
-                # Fallback: 从本地vggt目录加载
-                import sys
-                import os
-                vggt_path = os.path.join(os.path.dirname(__file__), '../../vggt')
-                if vggt_path not in sys.path:
-                    sys.path.insert(0, vggt_path)
-                
-                from vggt.models.vggt import VGGT
-                self.vggt = VGGT(
-                    img_size=224,  # 适配我们的输入尺寸
-                    patch_size=16,
-                    embed_dim=1024,
-                    enable_camera=False,
-                    enable_point=False,
-                    enable_depth=False,
-                    enable_track=False
-                )
-                print("✓ Successfully loaded VGGT from local implementation")
-                self.use_pretrained_vggt = False
-            except Exception as e2:
-                print(f"✗ Error loading local VGGT: {e2}")
-                raise RuntimeError("Cannot load VGGT. Please install vggt or check HuggingFace access.")
+            print(f"⚠ Could not load official weights: {e}")
+            print("  Using VGGT structure with random initialization (no pretrained weights).")
+
+        # 检查 aggregator（本 adapter 只使用这部分）
+        if hasattr(self.vggt, 'aggregator'):
+            agg = self.vggt.aggregator
+            has_frame = hasattr(agg, 'frame_blocks')
+            has_global = hasattr(agg, 'global_blocks')
+            print(f"  - Aggregator: ✓ (frame_blocks={len(agg.frame_blocks) if has_frame else 0}, global_blocks={len(agg.global_blocks) if has_global else 0})")
+        else:
+            print("  - Warning: No aggregator found.")
         
         # VGGT的embedding维度
-        self.vggt_embed_dim = 1024  # facebook/vggt 默认
+        self.vggt_embed_dim = 1024  # facebook/VGGT-1B 默认
         self.target_dim = config.embed_dim  # 我们的目标维度 (768)
         
         print(f"  VGGT embedding dim: {self.vggt_embed_dim}")
@@ -178,47 +195,163 @@ class VGGTAdapter(nn.Module):
         )
         language_enhanced = self.cross_attn_norm(language_enhanced + language_adapted)
         
-        # ========== Step 3: 准备VGGT输入 (单帧) ==========
-        # 将vision tokens重塑为VGGT期望的格式
-        # VGGT期望: [B, S, 3, H, W] 其中 S 是序列长度
-        # 对于单帧，我们设置 S=1
-        
-        # 但是我们已经有tokens了，需要构造伪图像或直接使用aggregator
-        # 这里采用直接使用aggregator的方案
+        # ========== Step 3: 使用VGGT aggregator处理tokens ==========
+        # VGGT aggregator期望tokens形状:
+        # - Frame attention: [B*S, P, C] 其中 P 是每个frame的token数
+        # - Global attention: [B, S*P, C]
+        # 对于单帧输入，S=1
         
         try:
-            # 尝试使用VGGT的aggregator
             aggregator = self.vggt.aggregator if hasattr(self.vggt, 'aggregator') else None
             
-            if aggregator is not None and hasattr(aggregator, 'frame_blocks'):
-                # 使用VGGT的transformer blocks
-                # 将vision和language tokens作为输入
-                x = torch.cat([vision_adapted, language_enhanced], dim=1)  # [B, N_v+N_l, 1024]
+            if aggregator is not None and hasattr(aggregator, 'frame_blocks') and hasattr(aggregator, 'global_blocks'):
+                # 合并vision和language tokens
+                # 形状: [B, N_v+N_l, C] = [B, P, C] 其中 P = N_v + N_l
+                combined_tokens = torch.cat([vision_adapted, language_enhanced], dim=1)  # [B, P, C]
                 
-                # VGGT alternating attention
-                num_layers = min(len(aggregator.frame_blocks), len(aggregator.global_blocks))
-                for i in range(num_layers):
-                    # Frame-level attention
-                    if hasattr(aggregator, 'frame_blocks'):
-                        x = aggregator.frame_blocks[i](x, pos=None)
-                    # Global attention
-                    if hasattr(aggregator, 'global_blocks'):
-                        x = aggregator.global_blocks[i](x, pos=None)
+                B = combined_tokens.size(0)
+                S = 1  # 单帧输入
+                P = combined_tokens.size(1)  # 总token数 (N_v + N_l)
+                C = combined_tokens.size(2)  # embed_dim (1024)
                 
-                # 投影回目标维度
-                # VGGT输出需要concat (模拟frame和global特征)
-                x_projected = self.feature_projector(torch.cat([x, x], dim=-1))  # [B, N_v+N_l, D]
+                # 检查维度是否匹配
+                if C != self.vggt_embed_dim:
+                    raise ValueError(f"Token dimension {C} does not match VGGT embed_dim {self.vggt_embed_dim}")
+                
+                # 构造位置编码 (如果需要)
+                pos = None
+                if hasattr(aggregator, 'position_getter') and aggregator.position_getter is not None:
+                    # 从vision_info获取grid信息来构造位置编码
+                    grid_size = vision_info.get('grid_size', int(N_v ** 0.5))
+                    # 为vision tokens构造2D位置编码
+                    # 为language tokens添加虚拟位置（使用vision tokens的最后一个位置）
+                    if grid_size > 0 and N_v > 0:
+                        try:
+                            # 构造vision tokens的2D位置
+                            vision_pos = aggregator.position_getter(
+                                B * S, grid_size, grid_size, device=combined_tokens.device
+                            )  # [B*S, grid_size*grid_size, 2]
+                            
+                            # 如果vision_pos的token数少于N_v，需要扩展或截断
+                            if vision_pos.size(1) < N_v:
+                                # 扩展：重复最后一个位置
+                                last_pos = vision_pos[:, -1:, :]
+                                padding = last_pos.expand(-1, N_v - vision_pos.size(1), -1)
+                                vision_pos = torch.cat([vision_pos, padding], dim=1)
+                            elif vision_pos.size(1) > N_v:
+                                # 截断：只取前N_v个
+                                vision_pos = vision_pos[:, :N_v, :]
+                            
+                            # 为language tokens添加位置（使用最后一个vision token的位置）
+                            if N_l > 0:
+                                lang_pos = vision_pos[:, -1:, :].expand(-1, N_l, -1)  # [B*S, N_l, 2]
+                                # 合并位置编码
+                                pos = torch.cat([vision_pos, lang_pos], dim=1)  # [B*S, P, 2]
+                            else:
+                                pos = vision_pos  # [B*S, N_v, 2]
+                        except Exception as e:
+                            # 如果位置编码构造失败，使用None
+                            pos = None
+                
+                # 使用VGGT的alternating attention机制
+                # 参考 aggregator._process_frame_attention 和 _process_global_attention
+                frame_idx = 0
+                global_idx = 0
+                frame_intermediates = []
+                global_intermediates = []
+                
+                # 获取alternating attention的配置
+                aa_order = aggregator.aa_order if hasattr(aggregator, 'aa_order') else ["frame", "global"]
+                aa_block_num = aggregator.aa_block_num if hasattr(aggregator, 'aa_block_num') else len(aggregator.frame_blocks)
+                aa_block_size = aggregator.aa_block_size if hasattr(aggregator, 'aa_block_size') else 1
+                
+                tokens = combined_tokens
+                
+                for _ in range(aa_block_num):
+                    for attn_type in aa_order:
+                        if attn_type == "frame":
+                            # Frame attention: [B*S, P, C]
+                            if tokens.shape != (B * S, P, C):
+                                tokens = tokens.view(B, S, P, C).view(B * S, P, C)
+                            
+                            if pos is not None and pos.shape != (B * S, P, 2):
+                                pos_frame = pos.view(B, S, P, 2).view(B * S, P, 2)
+                            else:
+                                pos_frame = pos
+                            
+                            # 处理frame blocks
+                            for _ in range(aa_block_size):
+                                if frame_idx < len(aggregator.frame_blocks):
+                                    if self.training:
+                                        tokens = torch.utils.checkpoint.checkpoint(
+                                            aggregator.frame_blocks[frame_idx], 
+                                            tokens, pos_frame, 
+                                            use_reentrant=aggregator.use_reentrant if hasattr(aggregator, 'use_reentrant') else False
+                                        )
+                                    else:
+                                        tokens = aggregator.frame_blocks[frame_idx](tokens, pos=pos_frame)
+                                    frame_idx += 1
+                                    frame_intermediates.append(tokens.view(B, S, P, C))
+                        
+                        elif attn_type == "global":
+                            # Global attention: [B, S*P, C]
+                            if tokens.shape != (B, S * P, C):
+                                tokens = tokens.view(B, S, P, C).view(B, S * P, C)
+                            
+                            if pos is not None and pos.shape != (B, S * P, 2):
+                                pos_global = pos.view(B, S, P, 2).view(B, S * P, 2)
+                            else:
+                                pos_global = pos
+                            
+                            # 处理global blocks
+                            for _ in range(aa_block_size):
+                                if global_idx < len(aggregator.global_blocks):
+                                    if self.training:
+                                        tokens = torch.utils.checkpoint.checkpoint(
+                                            aggregator.global_blocks[global_idx],
+                                            tokens, pos_global,
+                                            use_reentrant=aggregator.use_reentrant if hasattr(aggregator, 'use_reentrant') else False
+                                        )
+                                    else:
+                                        tokens = aggregator.global_blocks[global_idx](tokens, pos=pos_global)
+                                    global_idx += 1
+                                    global_intermediates.append(tokens.view(B, S, P, C))
+                
+                # 合并frame和global的中间特征（类似aggregator的输出）
+                # 取最后一层的输出
+                if len(frame_intermediates) > 0 and len(global_intermediates) > 0:
+                    # 对齐长度
+                    min_len = min(len(frame_intermediates), len(global_intermediates))
+                    frame_final = frame_intermediates[-1]  # [B, S, P, C]
+                    global_final = global_intermediates[-1]  # [B, S, P, C]
+                    
+                    # Concat frame和global特征: [B, S, P, 2C]
+                    concat_features = torch.cat([frame_final, global_final], dim=-1)  # [B, 1, P, 2C]
+                    concat_features = concat_features.squeeze(1)  # [B, P, 2C]
+                    
+                    # 投影回目标维度
+                    x_projected = self.feature_projector(concat_features)  # [B, P, D]
+                else:
+                    # Fallback: 如果没有中间特征，直接使用最后的tokens
+                    tokens_final = tokens.view(B, S, P, C).squeeze(1)  # [B, P, C]
+                    x_projected = self.feature_projector(torch.cat([tokens_final, tokens_final], dim=-1))
                 
             else:
-                # Fallback: 简单的transformer处理
-                print("Warning: Using fallback path (VGGT aggregator not available)")
-                x = torch.cat([vision_adapted, language_enhanced], dim=1)
-                # 简单投影
-                x_projected = self.feature_projector(torch.cat([x, x], dim=-1))
+                # Fallback: aggregator不可用
+                raise AttributeError("VGGT aggregator does not have required attributes")
                 
         except Exception as e:
-            print(f"Warning: Error in VGGT processing: {e}")
-            print("Using simple concatenation fallback")
+            import traceback
+            # 只在第一次错误时打印详细traceback，避免日志过多
+            if not hasattr(self, '_vggt_error_logged'):
+                error_msg = f"Error in VGGT processing: {e}\n{traceback.format_exc()}"
+                print(f"Warning: {error_msg}")
+                print("Using simple concatenation fallback")
+                self._vggt_error_logged = True
+            else:
+                # 后续错误只打印简短信息
+                print(f"Warning: VGGT processing error (using fallback): {type(e).__name__}")
+            
             x = torch.cat([vision_adapted, language_enhanced], dim=1)
             x_projected = self.feature_projector(torch.cat([x, x], dim=-1))
         

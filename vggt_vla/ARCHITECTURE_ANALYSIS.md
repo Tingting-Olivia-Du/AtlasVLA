@@ -350,18 +350,13 @@ python scripts/train_vla.py \
 
 ### 监控训练
 
-```bash
-# 启动 TensorBoard
-tensorboard --logdir logs
+配置中设置 `use_wandb: true`，在 wandb.ai 查看曲线；或查看 `log_dir` 下的 `train_*.log` 文本日志。
 
-# 访问 http://localhost:6006
-```
-
-监控指标:
+监控指标（wandb / 文本日志）:
 - `train/loss`: 训练损失
-- `epoch/val_loss`: 验证损失
-- `epoch/action_mse`: 动作预测 MSE
-- `epoch/action_mae`: 动作预测 MAE
+- `val_loss`: 验证损失
+- `val/action_mse`: 动作预测 MSE
+- `val/action_mae`: 动作预测 MAE
 
 ### 模型评估
 

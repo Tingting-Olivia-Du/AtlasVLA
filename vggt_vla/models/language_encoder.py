@@ -90,11 +90,16 @@ class LanguageEncoder(nn.Module):
             )
         
         language_features = outputs.last_hidden_state
+        # Convert to float32 to match projector dtype (projector weights are float32)
+        # This prevents dtype mismatch errors when language model outputs bfloat16
+        language_features = language_features.to(torch.float32)
         language_tokens = self.projector(language_features)
         
         # Add positional encoding
         seq_len = language_tokens.size(1)
-        language_tokens = language_tokens + self.pos_embed[:, :seq_len, :]
+        # Ensure pos_embed is on the same device and dtype as language_tokens
+        pos_embed = self.pos_embed[:, :seq_len, :].to(device=language_tokens.device, dtype=language_tokens.dtype)
+        language_tokens = language_tokens + pos_embed
         
         actual_lengths = attention_mask.sum(dim=1)
         language_info = {

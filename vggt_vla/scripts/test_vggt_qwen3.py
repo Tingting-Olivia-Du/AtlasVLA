@@ -181,7 +181,7 @@ def main():
         print("\nNext steps:")
         print("1. Train with: bash scripts/quick_start.sh configs/train_vggt_qwen3.yaml")
         print("2. Or with DINOv2: bash scripts/quick_start.sh configs/train_vggt_qwen3_dinov2.yaml")
-        print("3. Monitor with: tensorboard --logdir logs")
+        print("3. Monitor with: set use_wandb: true in config and run wandb at wandb.ai")
         print("="*80 + "\n")
         exit(0)
     else:

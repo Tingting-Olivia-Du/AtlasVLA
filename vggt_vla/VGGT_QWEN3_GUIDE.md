@@ -146,12 +146,7 @@ bash scripts/quick_start.sh configs/train_vggt_qwen3_dinov2.yaml
 
 ### 3. 监控训练
 
-```bash
-# 启动 TensorBoard
-tensorboard --logdir logs
-
-# 访问 http://localhost:6006
-```
+配置中设置 `use_wandb: true`，在 [wandb.ai](https://wandb.ai) 查看曲线；或查看 `log_dir` 下的 `train_*.log` 文本日志。
 
 ---
 

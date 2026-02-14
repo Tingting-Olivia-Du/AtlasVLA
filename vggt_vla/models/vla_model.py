@@ -35,7 +35,7 @@ class VLAModel(nn.Module):
         # VGGT Backbone
         print("\n[3/4] VGGT Backbone")
         if config.vggt.use_pretrained_vggt:
-            print("  Using facebook/vggt from HuggingFace")
+            print("  Using facebook/VGGT-1B from HuggingFace")
             self.vggt_backbone = VGGTAdapter(config.vggt)
         else:
             print("  Using simplified VGGT implementation")

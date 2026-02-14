@@ -117,7 +117,9 @@ class VisionEncoder(nn.Module):
         x = x.flatten(2).transpose(1, 2)  # [B, N, D]
         
         # Add positional encoding
-        x = x + self.pos_embed
+        # Ensure pos_embed is on the same device and dtype as x
+        pos_embed = self.pos_embed.to(device=x.device, dtype=x.dtype)
+        x = x + pos_embed
         x = self.norm(x)
         
         grid_size = self.img_size // self.patch_size
@@ -150,6 +152,9 @@ class VisionEncoder(nn.Module):
                 raise NotImplementedError
         
         # Project to target dimension
+        # Convert to float32 to match projector dtype (projector weights are float32)
+        # This prevents dtype mismatch errors when vision tower outputs bfloat16
+        vision_features = vision_features.to(torch.float32)
         vision_tokens = self.projector(vision_features)
         
         # Infer grid size from number of patches

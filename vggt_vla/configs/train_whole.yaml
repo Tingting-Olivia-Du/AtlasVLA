@@ -1,0 +1,49 @@
+# 简单配置 - 不使用预训练 vision tower 和 VGGT
+# 快速训练和调试用
+# ./scripts/train.sh train_whole
+# Dataset
+dataset_repo: "lerobot/libero_spatial_image"
+task_names: null  # null = all tasks (for datasets with 'task' field)
+task_indices: null  # null = all tasks; e.g. [0, 1, 2] for first 3 tasks (LeRobot format)
+max_episodes: null  # null = use all; e.g. 50 for quick debug
+max_samples: null   # null = use all; e.g. 1000 for quick debug
+cache_dir: "./data/hf_cache"
+
+# Training
+batch_size: 64
+num_epochs: 9999  # 配合 max_steps 使用，实际以 max_steps 为准
+max_steps: 100000  # step 上限 100k，达到后停止训练
+lr: 2.0e-4
+weight_decay: 1.0e-5
+num_workers: 4
+grad_clip: 1.0
+
+# Model - Simple Configuration
+use_vision_tower: false  # 直接 patch embedding
+use_pretrained_vggt: true # 简化版 VGGT
+freeze_language: true  # 冻结语言模型
+
+language_model: "Qwen/Qwen3-0.6B-Base"  # 如果 Qwen3-0.6B 不可用，fallback
+
+action_horizon: 10
+action_dim: 7
+
+# Logging
+log_dir: "./logs"
+exp_name: "vla_libero_spatial"
+save_freq: 999  # 按 epoch 保存间隔（999=基本禁用，改用 save_every_steps）
+save_every_steps: 10000  # 每 10k step 保存 checkpoint（10k, 20k, 30k...）
+best_model_save_every_steps: 10000  # best model 仅在 10k 倍数 step 时覆盖保存，避免每 epoch 都覆盖
+use_wandb: true   # true 时使用 Weights & Biases，需先 pip install wandb 并 wandb login
+wandb_project: "vla-vggt-libero-spatial-train"
+wandb_run_name: null  # null 时用 exp_name
+
+# Resume (从 checkpoint 继续训练)
+resume: logs/vla_libero_spatial/best_model_libero_spatial_image_20260213_212324_epoch15_loss0.0356.pth  # 如 "logs/vla_libero_spatial/best_model_libero_spatial_image_20260213_212324_epoch15_loss0.0356.pth"
+wandb_resume: true  # true 时续写同一 wandb run
+wandb_run_id: "tnxnfryn"  # 从 wandb 目录 run-*_tnxnfryn 或 run-tnxnfryn.wandb 提取；checkpoint 无此字段时必填
+
+# System
+device: "cuda"
+gpus: null  # 多卡 DDP: null = 使用全部可见 GPU; "0,1,2,3" = 仅用指定 GPU
+seed: 42

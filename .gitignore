@@ -86,6 +86,7 @@ Thumbs.db
 # HuggingFace cache
 .cache/
 huggingface/
+**/hf_cache/
 
 # VGGT (now part of the project)
 vggt/__pycache__/

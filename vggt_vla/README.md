@@ -104,12 +104,7 @@ python scripts/train_vla.py \
 
 ### 监控训练
 
-```bash
-# 启动 TensorBoard
-tensorboard --logdir logs
-
-# 访问 http://localhost:6006
-```
+在配置中设置 `use_wandb: true`，训练时自动上报到 [Weights & Biases](https://wandb.ai)。也可查看 `log_dir` 下的 `train_*.log` 文本日志。
 
 ## 项目结构
 ```

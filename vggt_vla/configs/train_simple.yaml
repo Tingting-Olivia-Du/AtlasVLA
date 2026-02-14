@@ -3,11 +3,14 @@
 
 # Dataset
 dataset_repo: "lerobot/libero_spatial_image"
-task_names: null  # null = all tasks
+task_names: null  # null = all tasks (for datasets with 'task' field)
+task_indices: [0, 1]  # null = all tasks; e.g. [0, 1, 2] for first 3 tasks (LeRobot format)
+max_episodes: null  # null = use all; e.g. 50 for quick debug
+max_samples: 100   # null = use all; e.g. 1000 for quick debug
 cache_dir: "./data/hf_cache"
 
 # Training
-batch_size: 4
+batch_size: 16
 num_epochs: 100
 lr: 1.0e-4
 weight_decay: 1.0e-5
@@ -28,7 +31,11 @@ action_dim: 7
 log_dir: "./logs"
 exp_name: "vla_simple"
 save_freq: 10
+use_wandb: true   # true 时使用 Weights & Biases，需先 pip install wandb 并 wandb login
+wandb_project: "vla-vggt-libero-spatial"
+wandb_run_name: null  # null 时用 exp_name
 
 # System
 device: "cuda"
+gpus: null  # 多卡训练: "0,1,2,3" 使用 GPU 0-3; null = 使用全部可见 GPU
 seed: 42
