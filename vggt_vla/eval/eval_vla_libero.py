@@ -14,6 +14,13 @@ import torch
 from pathlib import Path
 from datetime import datetime
 
+# wandb 可选：未安装时仅禁用 wandb 日志
+try:
+    import wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
+
 # 添加 vggt_vla 根目录
 VGGT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(VGGT_ROOT))
@@ -49,6 +56,16 @@ def parse_args():
     parser.add_argument("--num_procs", type=int, default=8,
                         help="Number of parallel envs for VectorEnv (batch inference, default 8 for 8xRTX6000)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="vla-vggt-libero-eval",
+                        help="W&B project name")
+    parser.add_argument("--wandb_entity", type=str, default=None,
+                        help="W&B entity/username (default: use default from wandb login)")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help="W&B run name (default: auto-generated)")
+    parser.add_argument("--log_dir", type=str, default=None,
+                        help="Directory to save log file (default: same as output_dir)")
     return parser.parse_args()
 
 
@@ -210,8 +227,13 @@ def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_e
             act = actions.cpu().numpy()[0]
 
             obs, reward, done, info = env.step(act)
-            if isinstance(done, (list, np.ndarray)):
+            # 处理不同格式的 done（单环境可能返回标量、list 或 array）
+            if isinstance(done, (list, tuple)) and len(done) > 0:
                 done = bool(done[0])
+            elif isinstance(done, np.ndarray):
+                done = bool(done.flat[0] if done.size > 0 else False)
+            else:
+                done = bool(done)
             if done:
                 num_success += 1
                 break
@@ -229,31 +251,53 @@ def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_e
 
 
 def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instruction, n_eval, max_steps,
-                             camera_h, camera_w, device, seed, num_procs):
-    """使用 VectorEnv 并行评估单个任务（batch 推理加速）"""
+                             camera_h, camera_w, device, seed, num_procs, use_dummy_vector_env=False):
+    """使用 VectorEnv 并行评估单个任务（batch 推理加速）
+    
+    Args:
+        use_dummy_vector_env: 如果 True，强制使用 DummyVectorEnv（用于多进程 worker 中）
+    """
     import gc
     import sys
+    import multiprocessing as mp
     from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv, DummyVectorEnv
 
     env_num = min(num_procs, n_eval)
     eval_loop_num = (n_eval + env_num - 1) // env_num
 
-    print(f"    Creating {env_num} parallel envs (VectorEnv)...", flush=True)
+    # 检测是否在多进程 worker 中（参考 LIBERO 官方做法）
+    # 如果在 multiprocessing worker 中，daemonic 进程不能创建子进程，必须使用 DummyVectorEnv
+    is_mp_worker = mp.current_process().name != 'MainProcess'
+    force_dummy = use_dummy_vector_env or is_mp_worker
+
+    print(f"    Creating {env_num} parallel envs ({'DummyVectorEnv' if force_dummy or env_num == 1 else 'SubprocVectorEnv'})...", flush=True)
     sys.stdout.flush()
     env_args = {
         "bddl_file_name": bddl_path,
         "camera_heights": camera_h,
         "camera_widths": camera_w,
     }
-    try:
-        if env_num == 1:
-            env = DummyVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
-        else:
-            env = SubprocVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
-    except Exception as e:
-        print(f"    [WARN] VectorEnv failed, falling back to single env: {e}", flush=True)
-        return evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_eval,
-                                max_steps, camera_h, camera_w, device, seed)
+    
+    # 参考 LIBERO 官方：重试机制处理环境创建失败
+    env_creation = False
+    count = 0
+    while not env_creation and count < 5:
+        try:
+            if env_num == 1 or force_dummy:
+                env = DummyVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
+            else:
+                env = SubprocVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
+            env_creation = True
+        except Exception as e:
+            if count < 4:
+                import time
+                print(f"    [WARN] VectorEnv creation failed (attempt {count+1}/5), retrying...", flush=True)
+                time.sleep(2)
+                count += 1
+            else:
+                print(f"    [WARN] VectorEnv failed after 5 attempts, falling back to single env: {e}", flush=True)
+                return evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_eval,
+                                        max_steps, camera_h, camera_w, device, seed)
 
     try:
         init_states = torch.load(init_states_path, weights_only=False)
@@ -307,10 +351,17 @@ def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instructi
             act_np = actions.cpu().numpy()
 
             obs, _, done, _ = env.step(act_np)
+            # VectorEnv 返回的 done 可能是 numpy array 或 list
             if isinstance(done, np.ndarray):
-                for k in range(env_num):
+                # 确保 done 是一维数组
+                done_flat = done.flatten() if done.ndim > 1 else done
+                for k in range(min(len(done_flat), env_num)):
+                    dones[k] = dones[k] or bool(done_flat[k])
+            elif isinstance(done, (list, tuple)):
+                for k in range(min(len(done), env_num)):
                     dones[k] = dones[k] or bool(done[k])
             else:
+                # 单个值，应用到所有环境（不应该发生，但容错处理）
                 dones[0] = dones[0] or bool(done)
 
             if all(dones):
@@ -362,13 +413,22 @@ def _eval_worker(args_tuple):
         if not os.path.exists(bddl_path) or not os.path.exists(init_path):
             continue
         if num_procs > 1:
+            # 在多进程 worker 中，强制使用 DummyVectorEnv（避免 daemonic 进程创建子进程的错误）
             sr = eval_fn(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
-                         camera_h, camera_w, device, seed + tid, num_procs)
+                         camera_h, camera_w, device, seed + tid, num_procs, use_dummy_vector_env=True)
         else:
             sr = eval_fn(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
                          camera_h, camera_w, device, seed + tid)
         local_results[tid] = {"instruction": task.language, "success_rate": float(sr)}
     return local_results
+
+
+def _log(msg: str, log_file=None):
+    """同时打印并写入日志文件"""
+    print(msg)
+    if log_file is not None:
+        log_file.write(msg + "\n")
+        log_file.flush()
 
 
 def main():
@@ -383,6 +443,19 @@ def main():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     args.checkpoint = str(ckpt_path.resolve())
 
+    # 设置输出目录和日志目录
+    output_dir = args.output_dir or str(Path(args.checkpoint).parent)
+    log_dir = args.log_dir or output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 创建日志文件
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    checkpoint_stem = Path(args.checkpoint).stem
+    log_filename = f"eval_{checkpoint_stem}_{timestamp}.log"
+    log_path = os.path.join(log_dir, log_filename)
+    log_file = open(log_path, "w", encoding="utf-8")
+
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -394,14 +467,44 @@ def main():
         args.device = f"cuda:{gpu_first}" if torch.cuda.is_available() else "cpu"
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    print("=" * 60)
-    print("VLA-LIBERO Evaluation")
-    print("=" * 60)
-    print(f"Checkpoint: {args.checkpoint}")
-    print(f"Benchmark: {args.benchmark}")
-    print(f"Device: {device}" + (f" (GPUs: {args.gpus})" if args.gpus else ""))
-    print(f"num_procs: {args.num_procs} (parallel envs for batch inference)")
-    print("=" * 60)
+    # 初始化 wandb
+    use_wandb = args.use_wandb and _HAS_WANDB
+    if args.use_wandb and not _HAS_WANDB:
+        _log("Warning: --use_wandb specified but wandb not installed. Run: pip install wandb", log_file)
+    
+    if use_wandb:
+        wandb_run_name = args.wandb_run_name or f"eval_{checkpoint_stem}_{timestamp}"
+        wandb_init_kwargs = {
+            "project": args.wandb_project,
+            "name": wandb_run_name,
+            "dir": log_dir,
+            "config": {
+                "checkpoint": args.checkpoint,
+                "benchmark": args.benchmark,
+                "n_eval": args.n_eval,
+                "max_steps": args.max_steps,
+                "num_procs": args.num_procs,
+                "seed": args.seed,
+                "camera_h": args.camera_h,
+                "camera_w": args.camera_w,
+                "device": str(device),
+                "gpus": args.gpus,
+            }
+        }
+        if args.wandb_entity:
+            wandb_init_kwargs["entity"] = args.wandb_entity
+        wandb.init(**wandb_init_kwargs)
+        _log(f"Weights & Biases logging enabled (entity: {args.wandb_entity or 'default'}, project: {args.wandb_project}).", log_file)
+
+    _log("=" * 60, log_file)
+    _log("VLA-LIBERO Evaluation", log_file)
+    _log("=" * 60, log_file)
+    _log(f"Checkpoint: {args.checkpoint}", log_file)
+    _log(f"Benchmark: {args.benchmark}", log_file)
+    _log(f"Device: {device}" + (f" (GPUs: {args.gpus})" if args.gpus else ""), log_file)
+    _log(f"num_procs: {args.num_procs} (parallel envs for batch inference)", log_file)
+    _log(f"Log file: {log_path}", log_file)
+    _log("=" * 60, log_file)
 
     from libero.libero.benchmark import get_benchmark
     from libero.libero import get_libero_path
@@ -426,21 +529,41 @@ def main():
         chunks = np.array_split(np.array(task_ids), n_workers)
         worker_args = []
         for i in range(len(chunks)):
-            if len(chunks[i]) > 0:
+            # 确保 chunks[i] 是数组，即使只有一个元素
+            chunk_array = np.atleast_1d(chunks[i])
+            if len(chunk_array) > 0:
+                # 转换为 Python list，确保 numpy 类型不会导致序列化问题
+                task_ids_list = [int(tid) for tid in chunk_array]
                 worker_args.append((
-                    int(gpu_ids[i % len(gpu_ids)]), list(chunks[i]),
+                    int(gpu_ids[i % len(gpu_ids)]), task_ids_list,
                     args.checkpoint, args.config, args.benchmark, args.n_eval, args.max_steps,
                     args.camera_h, args.camera_w, args.seed, args.num_procs
                 ))
-        print(f"\nMulti-GPU: {len(worker_args)} workers on GPUs {gpu_ids[:len(worker_args)]}")
-        with mp.Pool(len(worker_args)) as pool:
-            for local in pool.map(_eval_worker, worker_args):
-                results.update(local)
+        _log(f"\nMulti-GPU: {len(worker_args)} workers on GPUs {gpu_ids[:len(worker_args)]}", log_file)
+        try:
+            with mp.Pool(len(worker_args)) as pool:
+                for local in pool.map(_eval_worker, worker_args):
+                    results.update(local)
+                    # 记录每个任务的结果到 wandb（多卡模式下）
+                    if use_wandb:
+                        for tid, result in local.items():
+                            wandb.log({
+                                f"eval/task_{tid}_success_rate": result["success_rate"],
+                                "eval/task_id": tid,
+                            })
+        except Exception as e:
+            _log(f"\n[ERROR] Multi-GPU evaluation failed: {e}", log_file)
+            import traceback
+            _log(traceback.format_exc(), log_file)
+            if use_wandb:
+                wandb.finish()
+            log_file.close()
+            raise
     else:
         # 单卡顺序评估（支持 num_procs 并行 env）
-        print("\nLoading model...")
+        _log("\nLoading model...", log_file)
         model, config = load_model_and_config(args.checkpoint, args.config, device)
-        print("Model loaded.")
+        _log("Model loaded.", log_file)
         bddl_folder = get_libero_path("bddl_files")
         init_folder = get_libero_path("init_states")
         eval_fn = evaluate_one_task_vector if args.num_procs > 1 else evaluate_one_task
@@ -450,42 +573,78 @@ def main():
             bddl_path = os.path.join(bddl_folder, task.problem_folder, task.bddl_file)
             init_path = os.path.join(init_folder, task.problem_folder, task.init_states_file)
             if not os.path.exists(bddl_path):
-                print(f"[WARN] BDDL not found: {bddl_path}, skip task {tid}")
+                _log(f"[WARN] BDDL not found: {bddl_path}, skip task {tid}", log_file)
                 continue
             if not os.path.exists(init_path):
-                print(f"[WARN] Init states not found: {init_path}, skip task {tid}")
+                _log(f"[WARN] Init states not found: {init_path}, skip task {tid}", log_file)
                 continue
-            print(f"\nEvaluating task {tid}: {instruction[:50]}...")
+            _log(f"\nEvaluating task {tid}: {instruction[:50]}...", log_file)
             if args.num_procs > 1:
                 sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
-                    args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid, args.num_procs)
+                    args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid, args.num_procs, use_dummy_vector_env=False)
             else:
                 sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
                     args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid)
             results[tid] = {"instruction": instruction, "success_rate": float(sr)}
-            print(f"  Task {tid} success rate: {sr:.2%}")
+            _log(f"  Task {tid} success rate: {sr:.2%}", log_file)
+            
+            # 记录到 wandb
+            if use_wandb:
+                wandb.log({
+                    f"eval/task_{tid}_success_rate": float(sr),
+                    "eval/task_id": tid,
+                })
 
     if not results:
-        print("\n[WARN] No results (all tasks skipped?)")
+        _log("\n[WARN] No results (all tasks skipped?)", log_file)
+        if use_wandb:
+            wandb.finish()
+        log_file.close()
         return
 
     # 保存结果
-    output_dir = args.output_dir or str(Path(args.checkpoint).parent)
-    os.makedirs(output_dir, exist_ok=True)
-    out_name = f"eval_{Path(args.checkpoint).stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    out_name = f"eval_{checkpoint_stem}_{timestamp}.json"
     out_path = os.path.join(output_dir, out_name)
     avg_sr = float(np.mean([r["success_rate"] for r in results.values()]))
+    results_dict = {
+        "checkpoint": args.checkpoint,
+        "benchmark": args.benchmark,
+        "task_ids": sorted(results.keys()),
+        "n_eval": args.n_eval,
+        "max_steps": args.max_steps,
+        "num_procs": args.num_procs,
+        "seed": args.seed,
+        "results": results,
+        "avg_success_rate": avg_sr,
+    }
     with open(out_path, "w") as f:
-        json.dump({
-            "checkpoint": args.checkpoint,
-            "benchmark": args.benchmark,
-            "task_ids": sorted(results.keys()),
-            "n_eval": args.n_eval,
-            "results": results,
-            "avg_success_rate": avg_sr,
-        }, f, indent=2)
-    print(f"\nResults saved to {out_path}")
-    print(f"Average success rate: {avg_sr:.2%}")
+        json.dump(results_dict, f, indent=2)
+    
+    _log(f"\nResults saved to {out_path}", log_file)
+    _log(f"Average success rate: {avg_sr:.2%}", log_file)
+    
+    # 记录最终结果到 wandb
+    if use_wandb:
+        # 汇总所有任务的最终结果（避免重复记录单个任务）
+        final_log = {
+            "eval/avg_success_rate": avg_sr,
+            "eval/num_tasks": len(results),
+        }
+        # 可选：记录每个任务的最终值（用于最终汇总表）
+        for tid, result in results.items():
+            final_log[f"eval/final_task_{tid}_success_rate"] = result["success_rate"]
+        wandb.log(final_log)
+        wandb.finish()
+    
+    _log("=" * 60, log_file)
+    _log("Evaluation complete", log_file)
+    _log("=" * 60, log_file)
+    
+    # 确保资源清理
+    try:
+        log_file.close()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

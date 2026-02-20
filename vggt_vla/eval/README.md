@@ -57,5 +57,37 @@ GPUS=1 ./eval/run_eval.sh                             # 使用 GPU 1
 
 ## 输出
 
-- JSON 结果文件: `eval_<checkpoint_stem>_<timestamp>.json`
+- **JSON 结果文件**: `eval_<checkpoint_stem>_<timestamp>.json` - 包含所有任务的详细结果
+- **日志文件**: `eval_<checkpoint_stem>_<timestamp>.log` - 完整的评估日志
+- **WandB**: 如果启用，结果会自动同步到 WandB 项目
+
+## WandB 集成
+
+启用 WandB 记录评估结果：
+
+```bash
+# 方法1: 使用环境变量
+USE_WANDB=true ./eval/run_eval.sh
+
+# 方法2: 自定义 WandB 项目名和运行名
+USE_WANDB=true \
+WANDB_PROJECT="my-eval-project" \
+WANDB_RUN_NAME="eval-run-001" \
+./eval/run_eval.sh
+
+# 方法3: 直接使用 Python 脚本
+python eval/eval_vla_libero.py \
+    --checkpoint logs/xxx/best_model.pth \
+    --use_wandb \
+    --wandb_project "vla-eval" \
+    --wandb_run_name "my-eval-run"
+```
+
+## 日志目录
+
+默认日志保存在 checkpoint 同目录下，可通过 `--log_dir` 或环境变量 `LOG_DIR` 指定：
+
+```bash
+LOG_DIR="./eval_logs" ./eval/run_eval.sh
+```
 - 包含各任务 success rate 及平均值

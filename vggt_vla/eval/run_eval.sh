@@ -18,7 +18,7 @@ EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 VGGT_ROOT="$(cd "${EVAL_DIR}/.." && pwd)"
 
 # 默认 checkpoint（可修改）
-DEFAULT_CHECKPOINT="${VGGT_ROOT}/logs/vla_libero_spatial/best_model_libero_spatial_image_20260213_212324_epoch15_loss0.0356.pth"
+DEFAULT_CHECKPOINT="${VGGT_ROOT}/logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt"
 
 if [ -n "$1" ] && { [[ "$1" == *"/"* ]] || [[ "$1" == *.pth ]] || [[ "$1" == *.pt ]]; }; then
     CHECKPOINT="$1"
@@ -48,6 +48,12 @@ export PYTHONPATH="${VGGT_ROOT}:${VGGT_ROOT}/../dataset/LIBERO:${PYTHONPATH}"
 # 创建 datasets 目录，消除 LIBERO warning（eval 不用，但 config 会检查）
 mkdir -p "${VGGT_ROOT}/../dataset/LIBERO/libero/datasets"
 
+# WandB 支持（可选）- 需要在 echo 之前定义
+USE_WANDB=${USE_WANDB:-true}
+WANDB_PROJECT=${WANDB_PROJECT:-"vla-vggt-libero-eval"}
+WANDB_ENTITY=${WANDB_ENTITY:-"tingtingdu06-uw-madison"}  # 默认使用你的用户名
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-""}
+
 echo "=========================================="
 echo "VLA-LIBERO Evaluation"
 echo "=========================================="
@@ -57,12 +63,24 @@ echo "Task IDs: ${TASK_IDS:-all (0-9)}"
 echo "  --n_eval 20: 每任务 20 个 episode"
 echo "  --max_steps 600: 每 episode 最多 600 步"
 echo "  num_procs: ${NUM_PROCS} (并行 env，batch 推理)"
+[ "$USE_WANDB" = "true" ] && echo "  WandB: enabled (entity: $WANDB_ENTITY, project: $WANDB_PROJECT)"
+[ -n "$LOG_DIR" ] && echo "  Log dir: $LOG_DIR"
 echo "=========================================="
 
 EXTRA=""
 [ -n "$TASK_IDS" ] && EXTRA="--task_ids $TASK_IDS"
 [ -n "$GPUS" ] && EXTRA="$EXTRA --gpus $GPUS"
 [ -n "$NUM_PROCS" ] && EXTRA="$EXTRA --num_procs $NUM_PROCS"
+
+# WandB 参数添加到 EXTRA
+[ "$USE_WANDB" = "true" ] && EXTRA="$EXTRA --use_wandb"
+[ -n "$WANDB_PROJECT" ] && EXTRA="$EXTRA --wandb_project $WANDB_PROJECT"
+[ -n "$WANDB_ENTITY" ] && EXTRA="$EXTRA --wandb_entity $WANDB_ENTITY"
+[ -n "$WANDB_RUN_NAME" ] && EXTRA="$EXTRA --wandb_run_name $WANDB_RUN_NAME"
+
+# 日志目录（可选）
+LOG_DIR=${LOG_DIR:-""}
+[ -n "$LOG_DIR" ] && EXTRA="$EXTRA --log_dir $LOG_DIR"
 
 # config 可选：checkpoint 内含 config 时不需要
 CONFIG_ARG=""
