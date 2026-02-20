@@ -29,6 +29,13 @@ sys.path.insert(0, str(VGGT_ROOT))
 LIBERO_ROOT = VGGT_ROOT.parent / "dataset" / "LIBERO"
 sys.path.insert(0, str(LIBERO_ROOT))
 
+# 导入 VideoWriter
+try:
+    from libero.libero.utils.video_utils import VideoWriter
+    _HAS_VIDEO_WRITER = True
+except ImportError:
+    _HAS_VIDEO_WRITER = False
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate VLA model on LIBERO simulation")
@@ -66,6 +73,10 @@ def parse_args():
                         help="W&B run name (default: auto-generated)")
     parser.add_argument("--log_dir", type=str, default=None,
                         help="Directory to save log file (default: same as output_dir)")
+    parser.add_argument("--save_videos", action="store_true",
+                        help="Save evaluation videos (episodes will be recorded)")
+    parser.add_argument("--video_fps", type=int, default=30,
+                        help="FPS for saved videos (default: 30)")
     return parser.parse_args()
 
 
@@ -134,7 +145,39 @@ def load_model_and_config(checkpoint_path, config_path, device):
         raise ValueError("No config in checkpoint. Please provide --config with train yaml path.")
 
     model = VLAModel(config)
-    model.load_state_dict(state_dict, strict=True)
+
+    # 尝试严格加载，如果失败则使用宽松模式
+    try:
+        model.load_state_dict(state_dict, strict=True)
+        print(f"  ✓ Loaded all weights from checkpoint (strict mode)")
+    except RuntimeError as e:
+        error_msg = str(e)
+        if 'size mismatch' in error_msg or 'Missing' in error_msg:
+            print(f"  ⚠ Size mismatch detected: {error_msg[:150]}...")
+            print(f"  Loading with strict=False, skipping mismatched weights...")
+
+            incompatible = model.load_state_dict(state_dict, strict=False)
+            print(f"\n  Incompatible keys:")
+            print(f"    - Missing keys: {len(incompatible.missing_keys)}")
+            if incompatible.missing_keys:
+                for k in incompatible.missing_keys[:3]:
+                    print(f"      {k}")
+                if len(incompatible.missing_keys) > 3:
+                    print(f"      ... and {len(incompatible.missing_keys)-3} more")
+
+            print(f"    - Unexpected keys: {len(incompatible.unexpected_keys)}")
+            if incompatible.unexpected_keys:
+                for k in incompatible.unexpected_keys[:3]:
+                    print(f"      {k}")
+                if len(incompatible.unexpected_keys) > 3:
+                    print(f"      ... and {len(incompatible.unexpected_keys)-3} more")
+
+            print(f"\n  ⚠ WARNING: Some weights could not be loaded.")
+            print(f"  The model will use randomly initialized weights for mismatched layers.")
+            print(f"  This may affect evaluation performance.")
+        else:
+            raise
+
     model = model.to(device)
     model.eval()
     n_params = sum(p.numel() for p in model.parameters())
@@ -177,8 +220,12 @@ def preprocess_image_batch(imgs, device, img_size=224):
 
 
 def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_eval, max_steps,
-                      camera_h, camera_w, device, seed):
-    """评估单个任务的 success rate"""
+                      camera_h, camera_w, device, seed, video_writer=None):
+    """评估单个任务的 success rate
+    
+    Args:
+        video_writer: VideoWriter 实例，如果提供则保存视频
+    """
     import gc
     import sys
     from libero.libero.envs import OffScreenRenderEnv
@@ -211,8 +258,12 @@ def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_e
         # 初始几步让物理稳定
         dummy = np.zeros(7)
         obs, _, _, _ = env.step(dummy)
+        if video_writer:
+            video_writer.append_obs(obs, False, idx=ep, camera_name="agentview_image")
         for _ in range(4):
             obs, _, _, _ = env.step(dummy)
+            if video_writer:
+                video_writer.append_obs(obs, False, idx=ep, camera_name="agentview_image")
 
         done = False
         for step in range(max_steps - 5):
@@ -222,11 +273,27 @@ def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_e
 
             with torch.no_grad():
                 actions = model.predict_action(img_tensor, [instruction])
+
+            # 调试：在第一个 episode 的前 3 步打印详细信息
+            if ep == 0 and step < 3:
+                print(f"      [Step {step}] actions shape: {actions.shape}, dtype: {actions.dtype}")
+                print(f"               range: [{actions.min():.4f}, {actions.max():.4f}], mean: {actions.mean():.4f}")
+
             if actions.dim() == 3:
                 actions = actions[:, 0, :]
             act = actions.cpu().numpy()[0]
 
+            if ep == 0 and step < 3:
+                print(f"               final action: {act}")
+
             obs, reward, done, info = env.step(act)
+
+            if ep == 0 and step < 3:
+                print(f"               reward: {reward}, done: {done}")
+            # 保存视频帧
+            if video_writer:
+                video_writer.append_obs(obs, done, idx=ep, camera_name="agentview_image")
+            
             # 处理不同格式的 done（单环境可能返回标量、list 或 array）
             if isinstance(done, (list, tuple)) and len(done) > 0:
                 done = bool(done[0])
@@ -251,11 +318,12 @@ def evaluate_one_task(model, task, bddl_path, init_states_path, instruction, n_e
 
 
 def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instruction, n_eval, max_steps,
-                             camera_h, camera_w, device, seed, num_procs, use_dummy_vector_env=False):
+                             camera_h, camera_w, device, seed, num_procs, use_dummy_vector_env=False, video_writer=None):
     """使用 VectorEnv 并行评估单个任务（batch 推理加速）
     
     Args:
         use_dummy_vector_env: 如果 True，强制使用 DummyVectorEnv（用于多进程 worker 中）
+        video_writer: VideoWriter 实例，如果提供则保存视频
     """
     import gc
     import sys
@@ -318,6 +386,8 @@ def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instructi
         dummy = np.zeros((env_num, 7))
         for _ in range(5):
             obs, _, _, _ = env.step(dummy)
+            if video_writer:
+                video_writer.append_vector_obs(obs, [False] * env_num, camera_name="agentview_image")
 
         dones = [False] * env_num
         steps = 0
@@ -351,6 +421,9 @@ def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instructi
             act_np = actions.cpu().numpy()
 
             obs, _, done, _ = env.step(act_np)
+            # 保存视频帧
+            if video_writer:
+                video_writer.append_vector_obs(obs, dones, camera_name="agentview_image")
             # VectorEnv 返回的 done 可能是 numpy array 或 list
             if isinstance(done, np.ndarray):
                 # 确保 done 是一维数组
@@ -386,7 +459,7 @@ def evaluate_one_task_vector(model, task, bddl_path, init_states_path, instructi
 def _eval_worker(args_tuple):
     """多 GPU 并行: 每个 worker 在指定 GPU 上评估一组任务"""
     (gpu_id, task_ids_subset, checkpoint_path, config_path, benchmark_name,
-     n_eval, max_steps, camera_h, camera_w, seed, num_procs) = args_tuple
+     n_eval, max_steps, camera_h, camera_w, seed, num_procs, save_videos, video_fps, output_dir) = args_tuple
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     os.environ["MUJOCO_EGL_DEVICE_ID"] = str(gpu_id)
@@ -406,20 +479,46 @@ def _eval_worker(args_tuple):
     eval_fn = evaluate_one_task_vector if num_procs > 1 else evaluate_one_task
 
     local_results = {}
+    
+    # 策略选择：
+    # 1. 如果 num_procs > 1：尝试使用 DummyVectorEnv（虽然慢，但batch推理可能更快）
+    # 2. 如果 num_procs = 1：使用单环境（最快，让多卡并行）
+    # 
+    # 注意：多进程worker中无法使用SubprocVectorEnv（daemonic进程限制）
+    # 所以多卡时，要么用DummyVectorEnv（串行但batch推理），要么用单环境（最快）
+    
+    use_vector_env = num_procs > 1
+    if use_vector_env:
+        print(f"[Worker GPU {gpu_id}] Using DummyVectorEnv with {num_procs} envs (batch inference, sequential execution)", flush=True)
+    else:
+        print(f"[Worker GPU {gpu_id}] Using single env per task (multi-GPU parallelization)", flush=True)
+    
     for tid in task_ids_subset:
         task = benchmark.get_task(tid)
         bddl_path = os.path.join(bddl_folder, task.problem_folder, task.bddl_file)
         init_path = os.path.join(init_folder, task.problem_folder, task.init_states_file)
         if not os.path.exists(bddl_path) or not os.path.exists(init_path):
             continue
-        if num_procs > 1:
-            # 在多进程 worker 中，强制使用 DummyVectorEnv（避免 daemonic 进程创建子进程的错误）
-            sr = eval_fn(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
-                         camera_h, camera_w, device, seed + tid, num_procs, use_dummy_vector_env=True)
-        else:
-            sr = eval_fn(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
-                         camera_h, camera_w, device, seed + tid)
-        local_results[tid] = {"instruction": task.language, "success_rate": float(sr)}
+        
+        # 创建视频保存目录（如果需要）
+        video_writer = None
+        if save_videos and _HAS_VIDEO_WRITER:
+            video_folder = os.path.join(output_dir, "videos", f"task_{tid}")
+            video_writer = VideoWriter(video_folder, save_video=True, fps=video_fps, single_video=False)
+        
+        try:
+            if use_vector_env:
+                # 使用 DummyVectorEnv（虽然串行，但batch推理可能更快）
+                sr = evaluate_one_task_vector(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
+                                             camera_h, camera_w, device, seed + tid, num_procs, use_dummy_vector_env=True, video_writer=video_writer)
+            else:
+                # 使用单环境（最快，让多卡并行）
+                sr = evaluate_one_task(model, task, bddl_path, init_path, task.language, n_eval, max_steps,
+                                       camera_h, camera_w, device, seed + tid, video_writer=video_writer)
+            local_results[tid] = {"instruction": task.language, "success_rate": float(sr)}
+        finally:
+            if video_writer:
+                video_writer.save()
     return local_results
 
 
@@ -503,6 +602,13 @@ def main():
     _log(f"Benchmark: {args.benchmark}", log_file)
     _log(f"Device: {device}" + (f" (GPUs: {args.gpus})" if args.gpus else ""), log_file)
     _log(f"num_procs: {args.num_procs} (parallel envs for batch inference)", log_file)
+    if args.save_videos:
+        if _HAS_VIDEO_WRITER:
+            _log(f"Video saving: ENABLED (FPS: {args.video_fps}, saved to {output_dir}/videos/)", log_file)
+        else:
+            _log("Video saving: DISABLED (VideoWriter not available)", log_file)
+    else:
+        _log("Video saving: DISABLED", log_file)
     _log(f"Log file: {log_path}", log_file)
     _log("=" * 60, log_file)
 
@@ -537,9 +643,16 @@ def main():
                 worker_args.append((
                     int(gpu_ids[i % len(gpu_ids)]), task_ids_list,
                     args.checkpoint, args.config, args.benchmark, args.n_eval, args.max_steps,
-                    args.camera_h, args.camera_w, args.seed, args.num_procs
+                    args.camera_h, args.camera_w, args.seed, args.num_procs,
+                    args.save_videos, args.video_fps, output_dir
                 ))
         _log(f"\nMulti-GPU: {len(worker_args)} workers on GPUs {gpu_ids[:len(worker_args)]}", log_file)
+        if args.num_procs > 1:
+            _log(f"Note: Each worker uses DummyVectorEnv with {args.num_procs} envs (batch inference)", log_file)
+            _log("      DummyVectorEnv is sequential but enables batch inference acceleration", log_file)
+        else:
+            _log("Note: Each worker uses single env (GPU-level parallelization - RECOMMENDED)", log_file)
+            _log("      This maximizes multi-GPU efficiency", log_file)
         try:
             with mp.Pool(len(worker_args)) as pool:
                 for local in pool.map(_eval_worker, worker_args):
@@ -579,13 +692,24 @@ def main():
                 _log(f"[WARN] Init states not found: {init_path}, skip task {tid}", log_file)
                 continue
             _log(f"\nEvaluating task {tid}: {instruction[:50]}...", log_file)
-            if args.num_procs > 1:
-                sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
-                    args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid, args.num_procs, use_dummy_vector_env=False)
-            else:
-                sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
-                    args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid)
-            results[tid] = {"instruction": instruction, "success_rate": float(sr)}
+            
+            # 创建视频保存目录（如果需要）
+            video_writer = None
+            if args.save_videos and _HAS_VIDEO_WRITER:
+                video_folder = os.path.join(output_dir, "videos", f"task_{tid}")
+                video_writer = VideoWriter(video_folder, save_video=True, fps=args.video_fps, single_video=False)
+            
+            try:
+                if args.num_procs > 1:
+                    sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
+                        args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid, args.num_procs, use_dummy_vector_env=False, video_writer=video_writer)
+                else:
+                    sr = eval_fn(model, task, bddl_path, init_path, instruction, args.n_eval,
+                        args.max_steps, args.camera_h, args.camera_w, device, args.seed + tid, video_writer=video_writer)
+                results[tid] = {"instruction": instruction, "success_rate": float(sr)}
+            finally:
+                if video_writer:
+                    video_writer.save()
             _log(f"  Task {tid} success rate: {sr:.2%}", log_file)
             
             # 记录到 wandb

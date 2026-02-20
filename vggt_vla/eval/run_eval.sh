@@ -35,12 +35,22 @@ export PYOPENGL_PLATFORM="osmesa"
 export NVIDIA_DRIVER_CAPABILITIES="all"
 
 # GPU
-GPUS=${GPUS:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}
+# GPUS=${GPUS:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}
+GPUS=${GPUS:-${CUDA_VISIBLE_DEVICES:-0}}
 export CUDA_VISIBLE_DEVICES="$GPUS"
 export MUJOCO_EGL_DEVICE_ID=$(echo "$GPUS" | cut -d',' -f1)
 
-# num_procs: 并行 env 数（batch 推理），8x RTX6000 推荐 8
-NUM_PROCS=${NUM_PROCS:-8}
+# num_procs: 并行 env 数（batch 推理）
+# - 单卡模式：推荐 8（使用 SubprocVectorEnv，真正并行）
+# - 多卡模式：推荐 1（让多卡并行，避免 DummyVectorEnv 串行）
+#   如果设置 >1，会使用 DummyVectorEnv（串行但batch推理可能更快）
+# 自动检测：多卡时默认1，单卡时默认8
+NUM_GPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
+if [ "$NUM_GPUS" -gt 1 ]; then
+    NUM_PROCS=${NUM_PROCS:-1}  # 多卡默认1
+else
+    NUM_PROCS=${NUM_PROCS:-8}  # 单卡默认8
+fi
 
 export PYTHONPATH="${VGGT_ROOT}:${VGGT_ROOT}/../dataset/LIBERO:${PYTHONPATH}"
 [ -z "$LIBERO_CONFIG_PATH" ] && export LIBERO_CONFIG_PATH="${VGGT_ROOT}/../dataset/LIBERO/libero/libero"
@@ -54,6 +64,10 @@ WANDB_PROJECT=${WANDB_PROJECT:-"vla-vggt-libero-eval"}
 WANDB_ENTITY=${WANDB_ENTITY:-"tingtingdu06-uw-madison"}  # 默认使用你的用户名
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-""}
 
+# 视频保存（可选）
+SAVE_VIDEOS=${SAVE_VIDEOS:-true}  
+VIDEO_FPS=${VIDEO_FPS:-30}  # 视频帧率
+
 echo "=========================================="
 echo "VLA-LIBERO Evaluation"
 echo "=========================================="
@@ -62,8 +76,13 @@ echo "GPUs: $GPUS"
 echo "Task IDs: ${TASK_IDS:-all (0-9)}"
 echo "  --n_eval 20: 每任务 20 个 episode"
 echo "  --max_steps 600: 每 episode 最多 600 步"
-echo "  num_procs: ${NUM_PROCS} (并行 env，batch 推理)"
+if [ -n "$GPUS" ] && [ $(echo "$GPUS" | tr ',' '\n' | wc -l) -gt 1 ]; then
+    echo "  num_procs: ${NUM_PROCS} (多卡模式: ${NUM_PROCS}=1推荐，>1用DummyVectorEnv)"
+else
+    echo "  num_procs: ${NUM_PROCS} (单卡模式: 推荐8，使用SubprocVectorEnv真正并行)"
+fi
 [ "$USE_WANDB" = "true" ] && echo "  WandB: enabled (entity: $WANDB_ENTITY, project: $WANDB_PROJECT)"
+[ "$SAVE_VIDEOS" = "true" ] && echo "  Video saving: ENABLED (FPS: $VIDEO_FPS, saved to output_dir/videos/)"
 [ -n "$LOG_DIR" ] && echo "  Log dir: $LOG_DIR"
 echo "=========================================="
 
@@ -77,6 +96,10 @@ EXTRA=""
 [ -n "$WANDB_PROJECT" ] && EXTRA="$EXTRA --wandb_project $WANDB_PROJECT"
 [ -n "$WANDB_ENTITY" ] && EXTRA="$EXTRA --wandb_entity $WANDB_ENTITY"
 [ -n "$WANDB_RUN_NAME" ] && EXTRA="$EXTRA --wandb_run_name $WANDB_RUN_NAME"
+
+# 视频保存参数
+[ "$SAVE_VIDEOS" = "true" ] && EXTRA="$EXTRA --save_videos"
+[ -n "$VIDEO_FPS" ] && EXTRA="$EXTRA --video_fps $VIDEO_FPS"
 
 # 日志目录（可选）
 LOG_DIR=${LOG_DIR:-""}
