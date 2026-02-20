@@ -23,7 +23,7 @@ use_vision_tower: false  # 直接 patch embedding
 use_pretrained_vggt: true # 简化版 VGGT
 freeze_language: true  # 冻结语言模型
 
-language_model: "Qwen/Qwen3-0.6B-Base"  # 如果 Qwen3-0.6B 不可用，fallback
+language_model: "Qwen/Qwen3-0.6B-Base" 
 
 action_horizon: 10
 action_dim: 7

@@ -1,123 +1,160 @@
 #!/bin/bash
-# VLA-LIBERO 评估脚本
-# 用法: ./run_eval.sh [checkpoint_path] [task_ids...]
-#   - 不传 checkpoint 时使用默认路径
-#   - task_ids 可选，如 0 1 2 只评估指定任务
-#
-# 环境变量:
-#   GPUS: 指定 GPU，如 "0" 或 "0,1,2,3"
-#
-# 示例:
-#   ./run_eval.sh                                    # 用默认 checkpoint 评估全部
-#   ./run_eval.sh logs/xxx/best_model_xxx.pth 0 1 2  # 指定 checkpoint 和任务
-#   GPUS=1 ./run_eval.sh                              # 使用 GPU 1
+# VLA-VGGT 评估脚本
 
 set -e
 
-EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
-VGGT_ROOT="$(cd "${EVAL_DIR}/.." && pwd)"
+# 默认参数
+CHECKPOINT=""
+BENCHMARK="libero_spatial"
+TASK_IDS=""
+NUM_EPISODES=10
+MAX_STEPS=500
+NUM_ENVS=20
+SAVE_VIDEOS=false
+OUTPUT_DIR="./eval_results"
+DEVICE="cuda"
 
-# 默认 checkpoint（可修改）
-DEFAULT_CHECKPOINT="${VGGT_ROOT}/logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt"
+# 帮助信息
+usage() {
+    cat <<EOF
+用法: $0 [选项]
 
-if [ -n "$1" ] && { [[ "$1" == *"/"* ]] || [[ "$1" == *.pth ]] || [[ "$1" == *.pt ]]; }; then
-    CHECKPOINT="$1"
-    shift
+必需参数:
+    -c, --checkpoint PATH       模型检查点路径 (必需)
+
+可选参数:
+    -b, --benchmark BENCHMARK   LIBERO 基准 (默认: libero_spatial)
+                                选择: libero_spatial, libero_object, libero_goal, libero_10
+    -t, --task_ids IDS          要评估的任务 ID，用空格分隔 (默认: 全部)
+                                例: -t "0 1 2" 或 -t "0 2 4"
+    -n, --num_episodes N        每个任务的评估回合数 (默认: 10)
+    -m, --max_steps N           每个回合的最大步数 (默认: 500)
+    -e, --num_envs N            并行环境数 (默认: 20)
+    -v, --save_videos           保存评估视频
+    -o, --output_dir DIR        输出目录 (默认: ./eval_results)
+    -d, --device DEVICE         计算设备 (默认: cuda)
+    -h, --help                  显示本帮助信息
+
+示例:
+    # 评估单个任务，保存视频
+    $0 -c logs/vla_libero_spatial/best_model.pt -b libero_spatial -t "0" -v
+
+    # 评估所有任务
+    $0 -c logs/vla_libero_spatial/best_model.pt -b libero_spatial
+
+    # 快速调试 (少量回合和环境)
+    $0 -c logs/vla_libero_spatial/best_model.pt -b libero_spatial -n 2 -e 1
+
+    # 完整评估，保存视频，多任务
+    $0 -c logs/vla_libero_spatial/best_model.pt -b libero_spatial -t "0 1 2 3 4" -n 20 -v -o ./full_eval
+EOF
+    exit 1
+}
+
+# 解析参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c|--checkpoint)
+            CHECKPOINT="$2"
+            shift 2
+            ;;
+        -b|--benchmark)
+            BENCHMARK="$2"
+            shift 2
+            ;;
+        -t|--task_ids)
+            TASK_IDS="$2"
+            shift 2
+            ;;
+        -n|--num_episodes)
+            NUM_EPISODES="$2"
+            shift 2
+            ;;
+        -m|--max_steps)
+            MAX_STEPS="$2"
+            shift 2
+            ;;
+        -e|--num_envs)
+            NUM_ENVS="$2"
+            shift 2
+            ;;
+        -v|--save_videos)
+            SAVE_VIDEOS=true
+            shift
+            ;;
+        -o|--output_dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -d|--device)
+            DEVICE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "未知选项: $1"
+            usage
+            ;;
+    esac
+done
+
+# 检查必需参数
+if [ -z "$CHECKPOINT" ]; then
+    echo "错误: 必需指定 --checkpoint"
+    usage
 fi
-CHECKPOINT=${CHECKPOINT:-"$DEFAULT_CHECKPOINT"}
-TASK_IDS="$@"
 
-cd "${VGGT_ROOT}"
+# 检查检查点文件是否存在
+if [ ! -f "$CHECKPOINT" ]; then
+    echo "错误: 检查点文件不存在: $CHECKPOINT"
+    exit 1
+fi
 
-# 使用 OSMesa 替代 EGL，避免 EGLGLContext/MjRenderContext 清理错误（参考 openvla-SF）
-export MUJOCO_GL="osmesa"
-export PYOPENGL_PLATFORM="osmesa"
-export NVIDIA_DRIVER_CAPABILITIES="all"
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# GPU
-# GPUS=${GPUS:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}
-GPUS=${GPUS:-${CUDA_VISIBLE_DEVICES:-0}}
-export CUDA_VISIBLE_DEVICES="$GPUS"
-export MUJOCO_EGL_DEVICE_ID=$(echo "$GPUS" | cut -d',' -f1)
+# 构建命令
+CMD="python $SCRIPT_DIR/eval_vla.py"
+CMD="$CMD --checkpoint $CHECKPOINT"
+CMD="$CMD --benchmark $BENCHMARK"
+CMD="$CMD --num_episodes $NUM_EPISODES"
+CMD="$CMD --max_steps $MAX_STEPS"
+CMD="$CMD --num_envs $NUM_ENVS"
+CMD="$CMD --output_dir $OUTPUT_DIR"
+CMD="$CMD --device $DEVICE"
 
-# num_procs: 并行 env 数（batch 推理）
-# - 单卡模式：推荐 8（使用 SubprocVectorEnv，真正并行）
-# - 多卡模式：推荐 1（让多卡并行，避免 DummyVectorEnv 串行）
-#   如果设置 >1，会使用 DummyVectorEnv（串行但batch推理可能更快）
-# 自动检测：多卡时默认1，单卡时默认8
-NUM_GPUS=$(echo "$GPUS" | tr ',' '\n' | wc -l)
-if [ "$NUM_GPUS" -gt 1 ]; then
-    NUM_PROCS=${NUM_PROCS:-1}  # 多卡默认1
+if [ ! -z "$TASK_IDS" ]; then
+    CMD="$CMD --task_ids $TASK_IDS"
+fi
+
+if [ "$SAVE_VIDEOS" = true ]; then
+    CMD="$CMD --save_videos"
+fi
+
+# 输出命令和参数
+echo "=========================================="
+echo "VLA-VGGT 评估"
+echo "=========================================="
+echo "检查点: $CHECKPOINT"
+echo "基准: $BENCHMARK"
+if [ ! -z "$TASK_IDS" ]; then
+    echo "任务: $TASK_IDS"
 else
-    NUM_PROCS=${NUM_PROCS:-8}  # 单卡默认8
+    echo "任务: 全部"
 fi
-
-export PYTHONPATH="${VGGT_ROOT}:${VGGT_ROOT}/../dataset/LIBERO:${PYTHONPATH}"
-[ -z "$LIBERO_CONFIG_PATH" ] && export LIBERO_CONFIG_PATH="${VGGT_ROOT}/../dataset/LIBERO/libero/libero"
-
-# 创建 datasets 目录，消除 LIBERO warning（eval 不用，但 config 会检查）
-mkdir -p "${VGGT_ROOT}/../dataset/LIBERO/libero/datasets"
-
-# WandB 支持（可选）- 需要在 echo 之前定义
-USE_WANDB=${USE_WANDB:-true}
-WANDB_PROJECT=${WANDB_PROJECT:-"vla-vggt-libero-eval"}
-WANDB_ENTITY=${WANDB_ENTITY:-"tingtingdu06-uw-madison"}  # 默认使用你的用户名
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-""}
-
-# 视频保存（可选）
-SAVE_VIDEOS=${SAVE_VIDEOS:-true}  
-VIDEO_FPS=${VIDEO_FPS:-30}  # 视频帧率
-
+echo "回合数: $NUM_EPISODES"
+echo "最大步数: $MAX_STEPS"
+echo "并行环境: $NUM_ENVS"
+echo "保存视频: $SAVE_VIDEOS"
+echo "输出目录: $OUTPUT_DIR"
+echo "设备: $DEVICE"
 echo "=========================================="
-echo "VLA-LIBERO Evaluation"
-echo "=========================================="
-echo "Checkpoint: $CHECKPOINT"
-echo "GPUs: $GPUS"
-echo "Task IDs: ${TASK_IDS:-all (0-9)}"
-echo "  --n_eval 20: 每任务 20 个 episode"
-echo "  --max_steps 600: 每 episode 最多 600 步"
-if [ -n "$GPUS" ] && [ $(echo "$GPUS" | tr ',' '\n' | wc -l) -gt 1 ]; then
-    echo "  num_procs: ${NUM_PROCS} (多卡模式: ${NUM_PROCS}=1推荐，>1用DummyVectorEnv)"
-else
-    echo "  num_procs: ${NUM_PROCS} (单卡模式: 推荐8，使用SubprocVectorEnv真正并行)"
-fi
-[ "$USE_WANDB" = "true" ] && echo "  WandB: enabled (entity: $WANDB_ENTITY, project: $WANDB_PROJECT)"
-[ "$SAVE_VIDEOS" = "true" ] && echo "  Video saving: ENABLED (FPS: $VIDEO_FPS, saved to output_dir/videos/)"
-[ -n "$LOG_DIR" ] && echo "  Log dir: $LOG_DIR"
-echo "=========================================="
+echo ""
 
-EXTRA=""
-[ -n "$TASK_IDS" ] && EXTRA="--task_ids $TASK_IDS"
-[ -n "$GPUS" ] && EXTRA="$EXTRA --gpus $GPUS"
-[ -n "$NUM_PROCS" ] && EXTRA="$EXTRA --num_procs $NUM_PROCS"
-
-# WandB 参数添加到 EXTRA
-[ "$USE_WANDB" = "true" ] && EXTRA="$EXTRA --use_wandb"
-[ -n "$WANDB_PROJECT" ] && EXTRA="$EXTRA --wandb_project $WANDB_PROJECT"
-[ -n "$WANDB_ENTITY" ] && EXTRA="$EXTRA --wandb_entity $WANDB_ENTITY"
-[ -n "$WANDB_RUN_NAME" ] && EXTRA="$EXTRA --wandb_run_name $WANDB_RUN_NAME"
-
-# 视频保存参数
-[ "$SAVE_VIDEOS" = "true" ] && EXTRA="$EXTRA --save_videos"
-[ -n "$VIDEO_FPS" ] && EXTRA="$EXTRA --video_fps $VIDEO_FPS"
-
-# 日志目录（可选）
-LOG_DIR=${LOG_DIR:-""}
-[ -n "$LOG_DIR" ] && EXTRA="$EXTRA --log_dir $LOG_DIR"
-
-# config 可选：checkpoint 内含 config 时不需要
-CONFIG_ARG=""
-[ -f "${VGGT_ROOT}/configs/train_whole.yaml" ] && CONFIG_ARG="--config ${VGGT_ROOT}/configs/train_whole.yaml"
-
-python "${EVAL_DIR}/eval_vla_libero.py" \
-    --checkpoint "$CHECKPOINT" \
-    $CONFIG_ARG \
-    --benchmark libero_spatial \
-    --n_eval 20 \
-    --max_steps 600 \
-    --device cuda:0 \
-    $EXTRA
-
-echo "=========================================="
-echo "Evaluation complete"
-echo "=========================================="
+# 执行命令
+echo "执行命令: $CMD"
+echo ""
+$CMD

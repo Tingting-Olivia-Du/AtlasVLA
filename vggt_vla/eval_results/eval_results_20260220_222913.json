@@ -1,0 +1,57 @@
+{
+  "benchmark": "libero_spatial",
+  "checkpoint": "logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt",
+  "num_tasks": 3,
+  "num_episodes_per_task": 1,
+  "overall_success_rate": 0.0,
+  "total_success": 0,
+  "total_episodes": 3,
+  "timestamp": "2026-02-20T22:29:13.369452",
+  "results": {
+    "task_3": {
+      "task_id": 3,
+      "task_name": "pick up the black bowl on the cookie box and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 1,
+      "success_rate": 0.0,
+      "elapsed_time": 137.550635924,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 600
+        }
+      ]
+    },
+    "task_4": {
+      "task_id": 4,
+      "task_name": "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 1,
+      "success_rate": 0.0,
+      "elapsed_time": 136.779366031,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 600
+        }
+      ]
+    },
+    "task_5": {
+      "task_id": 5,
+      "task_name": "pick up the black bowl on the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 1,
+      "success_rate": 0.0,
+      "elapsed_time": 135.824869485,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 600
+        }
+      ]
+    }
+  }
+}

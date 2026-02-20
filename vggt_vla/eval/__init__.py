@@ -1,1 +1,0 @@
-# VLA-LIBERO Evaluation

@@ -26,7 +26,7 @@ def _get_vggt_module():
 class VGGTAdapter(nn.Module):
     """
     适配 facebook/VGGT-1B 到 VLA 任务:
-    1. ✅ 处理单帧输入 (原始VGGT设计用于视频序列，我们适配为单帧)
+    1. ✅ 处理单帧输入 (原始VGGT设计用于视频序列，我们适配为单帧) //但是libero 有两个视角的照片
     2. ✅ 注入 language tokens (通过特殊的融合机制)
     3. ✅ 提取适合 action prediction 的特征
 

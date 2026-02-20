@@ -1,93 +1,161 @@
-# VLA-LIBERO 评估
+# VLA-VGGT 评估模块
 
-在 LIBERO MuJoCo 仿真环境中评估 VLA 模型的 success rate。
+VLA-VGGT 模型在 LIBERO 环境中的完整评估系统。
 
-## 依赖
+## 文件说明
 
-1. 安装 LIBERO: `cd dataset/LIBERO && pip install -e .`
-2. 下载 LIBERO 数据集和资源 (bddl_files, init_states 等)
-3. 配置 `~/.libero/config.yaml` 中的路径
+| 文件 | 说明 |
+|------|------|
+| `eval_vla.py` | 主评估脚本，包含 `VLAEvaluator` 类 |
+| `test_eval.py` | 评估脚本的单元测试和验证 |
+| `run_eval.sh` | 便捷的 Shell 运行脚本（推荐） |
+| `README.md` | 本文件 |
 
-## 用法
+## 快速开始
 
-### 命令行
+### 方式 1: 直接 Python 命令
 
 ```bash
-# 在 vggt_vla 目录下运行
-cd vggt_vla
+cd ../  # 进入 vggt_vla 目录
 
-# 评估完整 checkpoint
-python eval/eval_vla_libero.py \
-    --checkpoint logs/vla_libero_spatial/best_model_libero_spatial_image_20260213_212324_epoch15_loss0.0356.pth \
-    --config configs/train_whole.yaml \
+# 快速测试（单任务，2个回合）
+python eval/eval_vla.py \
+    --checkpoint logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
     --benchmark libero_spatial \
-    --n_eval 20
+    --task_ids 0 \
+    --num_episodes 2 \
+    --num_envs 1
 
-# 只评估指定任务 (task 0, 1, 2)
-python eval/eval_vla_libero.py \
-    --checkpoint logs/vla_libero_spatial/best_model_xxx.pth \
-    --config configs/train_whole.yaml \
-    --task_ids 0 1 2
+# 标准评估（所有任务，10个回合）
+python eval/eval_vla.py \
+    --checkpoint logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
+    --benchmark libero_spatial
 ```
 
-### Shell 脚本
+### 方式 2: Shell 脚本（推荐）
 
 ```bash
-./eval/run_eval.sh                                    # 用默认 checkpoint 评估全部
-./eval/run_eval.sh logs/xxx/best_model_xxx.pth        # 指定 checkpoint
-./eval/run_eval.sh logs/xxx/best_model_xxx.pth 0 1 2  # 只评估 task 0,1,2
-GPUS=1 ./eval/run_eval.sh                             # 使用 GPU 1
+# 添加执行权限
+chmod +x eval/run_eval.sh
+
+# 快速测试
+./eval/run_eval.sh \
+    -c logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
+    -b libero_spatial \
+    -t "0" \
+    -n 2 \
+    -e 1
+
+# 完整评估
+./eval/run_eval.sh \
+    -c logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
+    -b libero_spatial \
+    -n 20 \
+    -v
 ```
 
-默认 checkpoint 已写在 `run_eval.sh` 中，可修改 `DEFAULT_CHECKPOINT` 变量。
+## 命令行参数
 
-### 参数
+### 必需参数
 
-| 参数 | 说明 | 默认 |
-|------|------|------|
-| `--checkpoint` | 模型 checkpoint 路径 (.pth 或 .pt) | 必填 |
-| `--config` | 训练配置 yaml (**checkpoint 内含 config 时不需要**) | None |
-| `--benchmark` | LIBERO 任务集 | libero_spatial |
-| `--task_ids` | 要评估的任务 ID | 全部 (0-9) |
-| `--n_eval` | 每任务评估 episode 数（每个任务跑多少次仿真） | 20 |
-| `--max_steps` | 每个 episode 最多步数（超过则视为失败） | 600 |
-| `--gpus` | 多卡并行: 如 `0,1,2,3,4,5,6,7` 将任务分配到多 GPU 并行 | None |
-| `--device` | 设备 | cuda:0 |
-| `--output_dir` | 结果保存目录 | checkpoint 同目录 |
+```
+--checkpoint PATH          模型检查点文件路径
+--benchmark {libero_*}     LIBERO 基准名称
+```
 
-## 输出
+### 可选参数
 
-- **JSON 结果文件**: `eval_<checkpoint_stem>_<timestamp>.json` - 包含所有任务的详细结果
-- **日志文件**: `eval_<checkpoint_stem>_<timestamp>.log` - 完整的评估日志
-- **WandB**: 如果启用，结果会自动同步到 WandB 项目
+```
+--task_ids [ID ...]        要评估的任务 ID（默认: 全部）
+--num_episodes N           每个任务的评估回合数（默认: 10）
+--max_steps N              每个回合的最大步数（默认: 500）
+--num_envs N               并行环境数（默认: 20）
+--save_videos              保存评估视频
+--output_dir PATH          输出目录（默认: ./eval_results）
+--device {cuda|cpu}        计算设备（默认: cuda）
+```
 
-## WandB 集成
+## 支持的基准
 
-启用 WandB 记录评估结果：
+- `libero_spatial`: 空间推理（10 个任务）
+- `libero_object`: 物体识别（10 个任务）
+- `libero_goal`: 目标推理（10 个任务）
+- `libero_10`: 混合任务（10 个任务）
 
+## 评估工作流
+
+1. **验证环境** (可选)
+   ```bash
+   python eval/test_eval.py
+   ```
+
+2. **运行评估**
+   ```bash
+   python eval/eval_vla.py --checkpoint <path> --benchmark <name>
+   ```
+
+3. **查看结果**
+   ```bash
+   cat eval_results/eval_results.json
+   ```
+
+## 输出结构
+
+```
+eval_results/
+├── eval_results.json         # 结果汇总（JSON）
+└── videos_task_X/            # 视频（如果指定 --save_videos）
+    ├── episode_0.mp4
+    └── ...
+```
+
+## 使用场景
+
+### 快速验证（~5 分钟）
 ```bash
-# 方法1: 使用环境变量
-USE_WANDB=true ./eval/run_eval.sh
-
-# 方法2: 自定义 WandB 项目名和运行名
-USE_WANDB=true \
-WANDB_PROJECT="my-eval-project" \
-WANDB_RUN_NAME="eval-run-001" \
-./eval/run_eval.sh
-
-# 方法3: 直接使用 Python 脚本
-python eval/eval_vla_libero.py \
-    --checkpoint logs/xxx/best_model.pth \
-    --use_wandb \
-    --wandb_project "vla-eval" \
-    --wandb_run_name "my-eval-run"
+python eval/eval_vla.py \
+    --checkpoint logs/.../best_model.pt \
+    --benchmark libero_spatial \
+    --task_ids 0 \
+    --num_episodes 2 \
+    --num_envs 1
 ```
 
-## 日志目录
-
-默认日志保存在 checkpoint 同目录下，可通过 `--log_dir` 或环境变量 `LOG_DIR` 指定：
-
+### 标准评估（~30-45 分钟）
 ```bash
-LOG_DIR="./eval_logs" ./eval/run_eval.sh
+python eval/eval_vla.py \
+    --checkpoint logs/.../best_model.pt \
+    --benchmark libero_spatial
 ```
-- 包含各任务 success rate 及平均值
+
+### 完整评估（~1.5-2.5 小时）
+```bash
+python eval/eval_vla.py \
+    --checkpoint logs/.../best_model.pt \
+    --benchmark libero_spatial \
+    --num_episodes 20 \
+    --save_videos
+```
+
+## 常见问题
+
+**Q: 如何保存视频？**
+A: 使用 `--save_videos` 标志。
+
+**Q: 内存不足？**
+A: 减少 `--num_envs`，例如 `--num_envs 1` 或 `--num_envs 5`。
+
+**Q: 找不到检查点？**
+A: 检查文件路径是否正确且文件存在。
+
+## 详细文档
+
+更多信息请参考：
+- `../../EVAL_README.md`: 完整的评估系统说明
+- `../../vggt_vla/EVAL_GUIDE.md`: 详细的使用指南
+
+## 参考资源
+
+- 原始 LIBERO evaluate.py: `../../dataset/LIBERO/libero/lifelong/evaluate.py`
+- VLA 模型: `../models/vla_model.py`
+- 模型配置: `../configs/model_config.py`
