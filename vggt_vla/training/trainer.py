@@ -44,6 +44,7 @@ class Trainer:
         rank: int = 0,
         world_size: int = 1,
         use_wandb: bool = False,
+        wandb_entity: str = None,
         wandb_project: str = 'vla-vggt',
         wandb_run_name: str = None,
         dataset_name: str = None,
@@ -51,8 +52,12 @@ class Trainer:
         resume_global_step: int = 0,
         resume_best_val_loss: float = None,
         wandb_run_id: str = None,
+        action_mean=None,
+        action_std=None,
     ):
         self.model = model
+        self.action_mean = action_mean  # (action_dim,) or None；不为 None 时训练用归一化 target 与 action_normalize=False
+        self.action_std = action_std
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.optimizer = optimizer
@@ -69,6 +74,7 @@ class Trainer:
         self.world_size = world_size
         self.is_main = is_main_process(rank)
         self.use_wandb = use_wandb and _HAS_WANDB and self.is_main
+        self.wandb_entity = wandb_entity
         self.wandb_project = wandb_project
         self.wandb_run_name = wandb_run_name or os.path.basename(os.path.normpath(log_dir))
         
@@ -99,11 +105,15 @@ class Trainer:
         # Weights & Biases
         if self.use_wandb:
             init_kwargs = dict(project=self.wandb_project, name=self.wandb_run_name, dir=log_dir, config=self._config_for_wandb())
+            if self.wandb_entity:
+                init_kwargs['entity'] = self.wandb_entity
             if wandb_run_id:
                 init_kwargs['id'] = wandb_run_id
                 init_kwargs['resume'] = 'allow'
-            wandb.init(**init_kwargs)
-            self._log("Weights & Biases logging enabled." + (" (resumed run)" if wandb_run_id else ""))
+            run = wandb.init(**init_kwargs)
+            self._log("Weights & Biases logging enabled (project=%s, entity=%s)." % (self.wandb_project, self.wandb_entity or "default"))
+            if run is not None and getattr(run, 'url', None):
+                self._log("  Run: %s" % run.url)
         elif use_wandb and not _HAS_WANDB and self.is_main:
             print("Warning: use_wandb=True but wandb not installed. Run: pip install wandb")
 
@@ -136,11 +146,16 @@ class Trainer:
             images = batch['image'].to(self.device)
             instructions = batch['instruction']
             actions_gt = batch['actions'].to(self.device)
-            
+            if self.action_mean is not None and self.action_std is not None:
+                mean = self.action_mean.to(actions_gt.device)
+                std = self.action_std.to(actions_gt.device)
+                actions_gt = (actions_gt - mean) / std
             self.optimizer.zero_grad()
-            outputs = self.model(images, instructions)
+            outputs = self.model(
+                images, instructions,
+                action_normalize=(self.action_mean is None or self.action_std is None)
+            )
             actions_pred = outputs['actions']
-            
             loss = action_loss_fn(actions_pred, actions_gt, self.config)
             
             loss.backward()
@@ -177,10 +192,15 @@ class Trainer:
             images = batch['image'].to(self.device)
             instructions = batch['instruction']
             actions_gt = batch['actions'].to(self.device)
-            
-            outputs = self.model(images, instructions)
+            if self.action_mean is not None and self.action_std is not None:
+                mean = self.action_mean.to(actions_gt.device)
+                std = self.action_std.to(actions_gt.device)
+                actions_gt = (actions_gt - mean) / std
+            outputs = self.model(
+                images, instructions,
+                action_normalize=(self.action_mean is None or self.action_std is None)
+            )
             actions_pred = outputs['actions']
-            
             loss = action_loss_fn(actions_pred, actions_gt, self.config)
             total_loss += loss.item()
             
@@ -301,7 +321,14 @@ class Trainer:
             'dataset_name': self.dataset_name,
             'training_start_time': self.training_start_time,
         }
-        
+        # 显式保存 norm_stats，eval / 继续训练时可直接读取，与 OpenVLA config.json 的 norm_stats 一致
+        if hasattr(model_for_save, 'action_head'):
+            ah = model_for_save.action_head
+            if hasattr(ah, 'action_mean') and hasattr(ah, 'action_std'):
+                checkpoint['norm_stats'] = {
+                    'action_mean': ah.action_mean.cpu().numpy().tolist(),
+                    'action_std': ah.action_std.cpu().numpy().tolist(),
+                }
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         if self.use_wandb and _HAS_WANDB and hasattr(wandb, 'run') and wandb.run is not None:
@@ -325,6 +352,12 @@ class Trainer:
         self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        # 恢复 norm_stats 到 Trainer，继续训练时用 checkpoint 的 mean/std 做 target 归一化
+        if 'norm_stats' in checkpoint:
+            ns = checkpoint['norm_stats']
+            if 'action_mean' in ns and 'action_std' in ns:
+                self.action_mean = torch.tensor(ns['action_mean'], dtype=torch.float32, device=self.device)
+                self.action_std = torch.tensor(ns['action_std'], dtype=torch.float32, device=self.device)
 
         return checkpoint.get('wandb_run_id')
 

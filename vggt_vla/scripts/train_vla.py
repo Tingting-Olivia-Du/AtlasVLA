@@ -82,6 +82,10 @@ def parse_args():
     parser.add_argument('--freeze_vggt', action='store_true',
                        help='Freeze VGGT backbone')
     
+    parser.add_argument('--use_multi_view', default=None,
+                       help='Use dual view (agentview + wrist). Set in yaml: use_multi_view: true. Default: true')
+    parser.add_argument('--no_multi_view', action='store_true',
+                       help='禁用双视角(与 use_multi_view 冲突时以 no_multi_view 为准)')
     parser.add_argument('--action_horizon', type=int, default=10,
                        help='Action prediction horizon')
     parser.add_argument('--action_dim', type=int, default=7,
@@ -100,6 +104,8 @@ def parse_args():
                        help='Only save best model every N steps (default: every epoch when val improves)')
     parser.add_argument('--use_wandb', action='store_true',
                        help='Use Weights & Biases for logging')
+    parser.add_argument('--wandb_entity', type=str, default=None,
+                       help='W&B entity (your username or team), e.g. tingtingdu06-uw-madison')
     parser.add_argument('--wandb_project', type=str, default='vla-vggt',
                        help='W&B project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
@@ -321,7 +327,17 @@ def main_worker(rank: int, world_size: int, args):
     # Load data
     if rank == 0:
         print("Loading data...")
-    train_loader, val_loader = get_libero_hf_dataloaders(
+    # 双视角: 优先读 config 的 use_multi_view，否则默认 True；--no_multi_view 可覆盖
+    use_multi_view = getattr(args, 'use_multi_view', None)
+    if use_multi_view is None:
+        use_multi_view = not getattr(args, 'no_multi_view', False)
+    else:
+        use_multi_view = bool(use_multi_view)
+    if getattr(args, 'no_multi_view', False):
+        use_multi_view = False
+    if rank == 0:
+        print(f"  Multi-view (agentview + wrist): {use_multi_view}")
+    train_loader, val_loader, action_stats = get_libero_hf_dataloaders(
         repo_id=args.dataset_repo,
         task_names=args.task_names,
         task_indices=args.task_indices,
@@ -330,11 +346,42 @@ def main_worker(rank: int, world_size: int, args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         action_horizon=args.action_horizon,
+        action_dim=config.action_head.action_dim,
         cache_dir=args.cache_dir,
+        use_multi_view=use_multi_view,
         distributed=distributed,
         rank=rank,
-        world_size=world_size
+        world_size=world_size,
+        compute_action_stats=True,
+        action_stats_max_samples=20000,
     )
+
+    action_mean, action_std = None, None
+    if distributed:
+        have_stats_t = torch.tensor(
+            [1 if (action_stats is not None) else 0], device=device, dtype=torch.long
+        )
+        dist.broadcast(have_stats_t, 0)
+        have_stats = have_stats_t.item() == 1
+    else:
+        have_stats = action_stats is not None
+    if have_stats:
+        if action_stats is not None:
+            mean_t = torch.from_numpy(action_stats["mean"]).float().to(device)
+            std_t = torch.from_numpy(action_stats["std"]).float().to(device)
+            if distributed:
+                dist.broadcast(mean_t, 0)
+                dist.broadcast(std_t, 0)
+        else:
+            mean_t = torch.zeros(config.action_head.action_dim, device=device)
+            std_t = torch.ones(config.action_head.action_dim, device=device)
+            dist.broadcast(mean_t, 0)
+            dist.broadcast(std_t, 0)
+        act_head = (model.module if distributed else model).action_head
+        act_head.set_action_stats(mean_t, std_t)
+        action_mean, action_std = mean_t, std_t
+        if rank == 0 and action_stats is not None:
+            print("  ✓ Action normalization: set_action_stats from dataset")
 
     # Create optimizer
     param_groups = model.module.get_param_groups(learning_rate=args.lr, weight_decay=args.weight_decay) if distributed else model.get_param_groups(learning_rate=args.lr, weight_decay=args.weight_decay)
@@ -379,6 +426,7 @@ def main_worker(rank: int, world_size: int, args):
         rank=rank,
         world_size=world_size,
         use_wandb=args.use_wandb,
+        wandb_entity=getattr(args, 'wandb_entity', None),
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name or args.exp_name,
         dataset_name=dataset_name,
@@ -386,6 +434,8 @@ def main_worker(rank: int, world_size: int, args):
         resume_global_step=resume_global_step,
         resume_best_val_loss=resume_best_val_loss,
         wandb_run_id=wandb_run_id,
+        action_mean=action_mean,
+        action_std=action_std,
     )
 
     # Load full checkpoint (model, optimizer, scheduler) when resuming

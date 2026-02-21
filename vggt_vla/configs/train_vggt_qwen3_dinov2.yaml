@@ -3,6 +3,7 @@
 
 # Dataset
 dataset_repo: "lerobot/libero_spatial_image"
+use_multi_view: true   # 单帧双视角: agentview + wrist
 task_names: null
 cache_dir: "./data/hf_cache"
 

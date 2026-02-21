@@ -3,6 +3,7 @@
 
 # Dataset
 dataset_repo: "lerobot/libero_spatial_image"
+use_multi_view: true   # 单帧双视角: agentview + wrist
 task_names: null  # null = all tasks (for datasets with 'task' field)
 task_indices: [0, 1]  # null = all tasks; e.g. [0, 1, 2] for first 3 tasks (LeRobot format)
 max_episodes: null  # null = use all; e.g. 50 for quick debug

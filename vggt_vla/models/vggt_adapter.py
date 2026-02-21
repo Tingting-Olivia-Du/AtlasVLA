@@ -220,38 +220,34 @@ class VGGTAdapter(nn.Module):
                 
                 # 构造位置编码 (如果需要)
                 pos = None
-                if hasattr(aggregator, 'position_getter') and aggregator.position_getter is not None:
-                    # 从vision_info获取grid信息来构造位置编码
-                    grid_size = vision_info.get('grid_size', int(N_v ** 0.5))
-                    # 为vision tokens构造2D位置编码
-                    # 为language tokens添加虚拟位置（使用vision tokens的最后一个位置）
-                    if grid_size > 0 and N_v > 0:
-                        try:
-                            # 构造vision tokens的2D位置
+                if hasattr(aggregator, 'position_getter') and aggregator.position_getter is not None and N_v > 0:
+                    try:
+                        # 多视角时 vision_info 含 patch_positions [2*P, 2]，直接使用
+                        if vision_info.get("patch_positions") is not None:
+                            pp = vision_info["patch_positions"]
+                            vision_pos = pp.unsqueeze(0).expand(B * S, -1, -1).to(
+                                device=combined_tokens.device, dtype=combined_tokens.dtype
+                            )
+                        else:
+                            grid_size = vision_info.get('grid_size', int(N_v ** 0.5))
                             vision_pos = aggregator.position_getter(
                                 B * S, grid_size, grid_size, device=combined_tokens.device
-                            )  # [B*S, grid_size*grid_size, 2]
-                            
-                            # 如果vision_pos的token数少于N_v，需要扩展或截断
+                            )
                             if vision_pos.size(1) < N_v:
-                                # 扩展：重复最后一个位置
                                 last_pos = vision_pos[:, -1:, :]
-                                padding = last_pos.expand(-1, N_v - vision_pos.size(1), -1)
-                                vision_pos = torch.cat([vision_pos, padding], dim=1)
+                                vision_pos = torch.cat([
+                                    vision_pos,
+                                    last_pos.expand(-1, N_v - vision_pos.size(1), -1)
+                                ], dim=1)
                             elif vision_pos.size(1) > N_v:
-                                # 截断：只取前N_v个
                                 vision_pos = vision_pos[:, :N_v, :]
-                            
-                            # 为language tokens添加位置（使用最后一个vision token的位置）
-                            if N_l > 0:
-                                lang_pos = vision_pos[:, -1:, :].expand(-1, N_l, -1)  # [B*S, N_l, 2]
-                                # 合并位置编码
-                                pos = torch.cat([vision_pos, lang_pos], dim=1)  # [B*S, P, 2]
-                            else:
-                                pos = vision_pos  # [B*S, N_v, 2]
-                        except Exception as e:
-                            # 如果位置编码构造失败，使用None
-                            pos = None
+                        if N_l > 0:
+                            lang_pos = vision_pos[:, -1:, :].expand(-1, N_l, -1)
+                            pos = torch.cat([vision_pos, lang_pos], dim=1)
+                        else:
+                            pos = vision_pos
+                    except Exception as e:
+                        pos = None
                 
                 # 使用VGGT的alternating attention机制
                 # 参考 aggregator._process_frame_attention 和 _process_global_attention

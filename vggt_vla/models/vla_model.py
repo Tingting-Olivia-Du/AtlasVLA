@@ -62,9 +62,12 @@ class VLAModel(nn.Module):
         self, 
         images: torch.Tensor,
         instructions: List[str],
-        return_features: bool = False
+        return_features: bool = False,
+        action_normalize: bool = True
     ) -> Dict[str, torch.Tensor]:
-        
+        """
+        action_normalize: True=推理/默认，输出反归一化动作；False=训练时与归一化 target 做 loss。
+        """
         # Vision encoding
         vision_tokens, vision_info = self.vision_encoder(images)
         
@@ -80,11 +83,11 @@ class VLAModel(nn.Module):
                 language_mask
             )
         
-        # Action prediction
+        # Action prediction (normalize=False 时 head 输出归一化空间，用于与 (target-mean)/std 算 loss)
         if self.use_spatial_action_head:
-            actions = self.action_head(global_features, vision_features)
+            actions = self.action_head(global_features, vision_features, normalize=action_normalize)
         else:
-            actions = self.action_head(global_features)
+            actions = self.action_head(global_features, normalize=action_normalize)
         
         outputs = {'actions': actions}
         

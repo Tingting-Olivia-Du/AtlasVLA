@@ -29,6 +29,7 @@ class LIBEROHFDataset(Dataset):
         transform: Optional[transforms.Compose] = None,
         action_horizon: int = 10,
         use_state: bool = False,
+        use_multi_view: bool = True,
         cache_dir: Optional[str] = None,
         streaming: bool = False,
         verbose: bool = True,
@@ -40,6 +41,7 @@ class LIBEROHFDataset(Dataset):
         self.transform = transform
         self.action_horizon = action_horizon
         self.use_state = use_state
+        self.use_multi_view = use_multi_view  # True: 单帧双视角 (agentview + wrist)，返回 [2,3,H,W]
         self.verbose = verbose
 
         def _log(msg): return print(msg) if verbose else None
@@ -49,7 +51,8 @@ class LIBEROHFDataset(Dataset):
             self.dataset = _hf_dataset
             self.episodes = _episodes
             self.max_samples = max_samples
-            _log(f"  ✓ Reusing dataset ({len(self.dataset)} samples, {len(self.episodes)} episodes)")
+            self.use_multi_view = use_multi_view
+            _log(f"  ✓ Reusing dataset ({len(self.dataset)} samples, {len(self.episodes)} episodes, multi_view={use_multi_view})")
             return
 
         _log(f"Loading dataset from HuggingFace: {repo_id}")
@@ -106,6 +109,9 @@ class LIBEROHFDataset(Dataset):
                     'observation.image': Image.fromarray(
                         np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
                     ),
+                    'observation.images.wrist_image': Image.fromarray(
+                        np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+                    ),
                     'action': np.random.randn(7).astype(np.float32),
                     'language_instruction': f"Pick and place task {ep}",
                 })
@@ -156,32 +162,38 @@ class LIBEROHFDataset(Dataset):
         sample_idx = episode_info['start_idx'] + timestep
         sample = self.dataset[sample_idx]
         
-        # 获取图像 (lerobot 格式: observation.images.image, observation.images.wrist_image)
-        image = sample.get('observation.image', None)
-        if image is None:
-            # 尝试 LeRobot/LIBERO 格式的字段名
-            for key in [
-                'observation.images.image',   # LeRobot libero_spatial_image 主视角
-                'observation.images.wrist_image',  # 腕部相机
-                'image', 'obs/image', 'observation/image'
-            ]:
-                if key in sample:
-                    image = sample[key]
-                    break
+        # 获取图像：单视角返回 [3,H,W]，多视角返回 [2,3,H,W] (agentview + wrist)
+        def _get_img(key_or_keys):
+            if isinstance(key_or_keys, str):
+                key_or_keys = [key_or_keys]
+            for key in key_or_keys:
+                if sample.get(key) is not None:
+                    img = sample[key]
+                    if isinstance(img, Image.Image):
+                        img = np.array(img)
+                    if self.transform:
+                        img = self.transform(img)
+                    else:
+                        img = torch.from_numpy(np.asarray(img)).float()
+                        if img.ndim == 3 and img.shape[-1] == 3:
+                            img = img.permute(2, 0, 1) / 255.0
+                    return img
+            return None
 
-        if image is None:
-            raise ValueError(f"Could not find image in sample keys: {sample.keys()}")
-        
-        # 转换图像
-        if isinstance(image, Image.Image):
-            image = np.array(image)
-        
-        if self.transform:
-            image = self.transform(image)
+        # 主视角 (agentview)：优先 observation.images.top / image
+        main_keys = ['observation.image', 'observation.images.top', 'observation.images.image', 'image', 'obs/image']
+        image_main = _get_img(main_keys)
+        if image_main is None:
+            raise ValueError(f"Could not find main image in sample keys: {sample.keys()}")
+
+        if self.use_multi_view:
+            wrist_keys = ['observation.images.wrist_image', 'observation.images.wrist', 'observation.wrist_image']
+            image_wrist = _get_img(wrist_keys)
+            if image_wrist is None:
+                image_wrist = image_main.clone() if isinstance(image_main, torch.Tensor) else torch.from_numpy(np.copy(np.asarray(image_main))).float()
+            image = torch.stack([image_main, image_wrist], dim=0)  # [2, 3, H, W]
         else:
-            image = torch.from_numpy(image).float()
-            if image.ndim == 3 and image.shape[-1] == 3:
-                image = image.permute(2, 0, 1) / 255.0
+            image = image_main
         
         # 获取动作序列
         actions = []
@@ -236,6 +248,41 @@ class LIBEROHFDataset(Dataset):
         return ep_idx, timestep
 
 
+def compute_action_stats_from_hf_dataset(
+    hf_dataset,
+    action_key: str = "action",
+    action_dim: int = 7,
+    max_samples: Optional[int] = 20000,
+    verbose: bool = True,
+) -> Optional[Dict[str, np.ndarray]]:
+    """
+    从 HuggingFace 数据集中统计 action 的 mean/std，用于训练时归一化 target 与 head 的 set_action_stats。
+    返回 {'mean': (action_dim,), 'std': (action_dim,)} 或 None（无有效数据时）。
+    """
+    actions = []
+    n = min(len(hf_dataset), max_samples) if max_samples else len(hf_dataset)
+    for i in range(n):
+        row = hf_dataset[i]
+        a = row.get(action_key)
+        if a is None:
+            continue
+        a = np.asarray(a, dtype=np.float64).flatten()
+        if a.size >= action_dim:
+            actions.append(a[:action_dim])
+    if len(actions) < 2:
+        if verbose:
+            print("  Warning: not enough actions for stats, skipping action normalization.")
+        return None
+    actions = np.stack(actions)
+    mean = np.ascontiguousarray(actions.mean(axis=0), dtype=np.float64)
+    std = actions.std(axis=0)
+    std = np.maximum(std, 1e-6)
+    std = np.ascontiguousarray(std.astype(np.float64))
+    if verbose:
+        print(f"  Action stats from {len(actions)} samples: mean shape {mean.shape}, std min={std.min():.4f}")
+    return {"mean": mean, "std": std}
+
+
 def get_libero_hf_dataloaders(
     repo_id: str = "lerobot/libero_spatial_image",
     task_names: Optional[List[str]] = None,
@@ -245,11 +292,15 @@ def get_libero_hf_dataloaders(
     batch_size: int = 32,
     num_workers: int = 4,
     action_horizon: int = 10,
+    action_dim: int = 7,
     train_split_ratio: float = 0.9,
     cache_dir: Optional[str] = None,
+    use_multi_view: bool = True,
     distributed: bool = False,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    compute_action_stats: bool = True,
+    action_stats_max_samples: Optional[int] = 20000,
 ):
     """
     创建 LIBERO HuggingFace 数据加载器
@@ -302,6 +353,7 @@ def get_libero_hf_dataloaders(
         max_samples=max_samples,
         transform=None,
         action_horizon=action_horizon,
+        use_multi_view=use_multi_view,
         cache_dir=cache_dir,
         verbose=is_main
     )
@@ -325,6 +377,7 @@ def get_libero_hf_dataloaders(
         max_samples=max_samples,
         transform=train_transform,
         action_horizon=action_horizon,
+        use_multi_view=use_multi_view,
         cache_dir=cache_dir,
         verbose=is_main,
         _hf_dataset=full_dataset.dataset,
@@ -339,6 +392,7 @@ def get_libero_hf_dataloaders(
         max_samples=max_samples,
         transform=val_transform,
         action_horizon=action_horizon,
+        use_multi_view=use_multi_view,
         cache_dir=cache_dir,
         verbose=is_main,
         _hf_dataset=full_dataset.dataset,
@@ -349,6 +403,16 @@ def get_libero_hf_dataloaders(
         print(f"\nDataset split:")
         print(f"  Train: {len(train_dataset)} samples from {len(train_episodes)} episodes")
         print(f"  Val: {len(val_dataset)} samples from {len(val_episodes)} episodes")
+
+    action_stats = None
+    if compute_action_stats and is_main:
+        action_stats = compute_action_stats_from_hf_dataset(
+            full_dataset.dataset,
+            action_key="action",
+            action_dim=action_dim,
+            max_samples=action_stats_max_samples,
+            verbose=is_main,
+        )
 
     # 创建 DataLoader (DDP 时使用 DistributedSampler)
     train_sampler = None
@@ -378,4 +442,4 @@ def get_libero_hf_dataloaders(
         pin_memory=True
     )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, action_stats

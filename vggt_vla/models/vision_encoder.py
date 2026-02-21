@@ -98,11 +98,37 @@ class VisionEncoder(nn.Module):
     def forward(self, images: torch.Tensor) -> Tuple[torch.Tensor, dict]:
         """
         Args:
-            images: [B, 3, H, W]
+            images: [B, 3, H, W] 单视角 或 [B, 2, 3, H, W] 双视角 (agentview + wrist)
         Returns:
-            vision_tokens: [B, N_patches, D]
-            spatial_info: dict
+            vision_tokens: [B, N_patches, D]  (双视角时 N_patches = 2 * num_patches_per_view)
+            spatial_info: dict (含 num_patches, patch_positions 等)
         """
+        # 单帧多视角: [B, 2, 3, H, W] -> 编码后 [B, 2*P, D]
+        if images.dim() == 5 and images.size(1) == 2:
+            B, V, C, H, W = images.shape
+            images_flat = images.view(B * V, C, H, W)
+            if self.use_vision_tower:
+                tokens_flat, spatial_info = self._forward_vision_tower(images_flat)
+            else:
+                tokens_flat, spatial_info = self._forward_direct(images_flat)
+            P = tokens_flat.size(1)
+            vision_tokens = tokens_flat.view(B, V * P, tokens_flat.size(-1))
+            grid_size = spatial_info.get("grid_size", int(P ** 0.5))
+            pos_single = self._get_patch_positions(grid_size)
+            if not isinstance(pos_single, torch.Tensor):
+                pos_single = torch.tensor(pos_single, device=vision_tokens.device, dtype=vision_tokens.dtype)
+            else:
+                pos_single = pos_single.to(device=vision_tokens.device, dtype=vision_tokens.dtype)
+            patch_positions = torch.cat([pos_single, pos_single], dim=0)
+            spatial_info = {
+                "grid_size": grid_size,
+                "num_patches": V * P,
+                "has_spatial_structure": True,
+                "patch_positions": patch_positions,
+                "num_views": V,
+                "single_frame_input": False,
+            }
+            return vision_tokens, spatial_info
         if self.use_vision_tower:
             return self._forward_vision_tower(images)
         else:

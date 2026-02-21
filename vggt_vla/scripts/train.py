@@ -34,13 +34,22 @@ def main():
     print(f"Model has {num_params / 1e6:.2f}M trainable parameters")
     
     print("Loading data...")
-    train_loader, val_loader = get_libero_dataloaders(
+    train_loader, val_loader, action_stats = get_libero_dataloaders(
         data_path=args.data_path,
         task_names=args.task_names,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        action_horizon=config.action_head.action_horizon
+        action_horizon=config.action_head.action_horizon,
+        use_multi_view=True,
+        compute_action_stats=True,
+        action_stats_max_samples=20000,
     )
+    action_mean, action_std = None, None
+    if action_stats is not None:
+        action_mean = torch.from_numpy(action_stats["mean"]).float().to(args.device)
+        action_std = torch.from_numpy(action_stats["std"]).float().to(args.device)
+        model.action_head.set_action_stats(action_mean, action_std)
+        print("  ✓ Action normalization: set_action_stats from dataset")
     
     param_groups = model.get_param_groups(
         learning_rate=args.lr,
@@ -61,7 +70,9 @@ def main():
         scheduler=scheduler,
         config=config,
         device=args.device,
-        log_dir=args.log_dir
+        log_dir=args.log_dir,
+        action_mean=action_mean,
+        action_std=action_std,
     )
     
     print("Starting training...")

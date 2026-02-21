@@ -65,6 +65,7 @@ class ActionHeadConfig:
     dropout: float = 0.1
     use_action_chunking: bool = True
     use_spatial_features: bool = False
+    use_tanh_output: bool = False  # 将输出约束到 [-1,1]，适合动作已归一化的环境
 
 @dataclass
 class ModelConfig:

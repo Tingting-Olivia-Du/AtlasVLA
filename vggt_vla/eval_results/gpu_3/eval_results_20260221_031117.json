@@ -1,0 +1,47 @@
+{
+  "benchmark": "libero_spatial",
+  "checkpoint": "/workspace/1228_tingting/AtlasVLA/vggt_vla/logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch458_step40375_loss0.0017.pt",
+  "num_tasks": 1,
+  "num_episodes_per_task": 5,
+  "overall_success_rate": 0.0,
+  "total_success": 0,
+  "total_episodes": 5,
+  "timestamp": "2026-02-21T03:11:17.972192",
+  "results": {
+    "task_9": {
+      "task_id": 9,
+      "task_name": "pick up the black bowl on the wooden cabinet and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 240.519551978,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    }
+  }
+}
