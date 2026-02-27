@@ -8,17 +8,18 @@ set -e
 
 # 默认参数（与 eval_vla.py 内置默认一致，改此处即可）
 # 使用相对路径，适配 atlas / 任意 workspace
-CHECKPOINT="logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch458_step40375_loss0.0017.pt"
-BENCHMARK="libero_object"
-TASK_IDS="0 1 2 3"
+CHECKPOINT="../logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt"
+BENCHMARK="libero_spatial"
+TASK_IDS=""
 NUM_EPISODES=5
 MAX_STEPS=220
-NUM_ENVS=1
+# 并行环境数：模型一次前向 batch=num_envs，显存大(如 140G)可设 20–32；受 CPU/子进程数限制不宜过大
+NUM_ENVS=20
 SAVE_VIDEOS=true
 OUTPUT_DIR="eval_results"   # 实际输出为 eval_results/<BENCHMARK>/（见下方）
 DEVICE="cuda"
 # 默认多卡；设为空则单卡（用 DEVICE）
-GPUS="0,1,2,3"
+GPUS="3"
 
 # 帮助信息
 usage() {

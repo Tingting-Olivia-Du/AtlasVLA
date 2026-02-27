@@ -4,7 +4,11 @@
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional
-from transformers import AutoModel, AutoImageProcessor
+from transformers import AutoModel
+try:
+    from transformers import AutoImageProcessor
+except ImportError:
+    AutoImageProcessor = None  # transformers < 4.25 无此 API，vision_tower 下 image_processor 将为 None
 
 
 class VisionEncoder(nn.Module):

@@ -23,12 +23,12 @@ cd vggt_vla
 python eval/eval_vla.py \
     --checkpoint logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
     --benchmark libero_spatial \
-    --task_ids 6 --num_episodes 1 --num_envs 1
+    --task_ids 6 --num_episodes 10 --num_envs 1
 
 python eval/eval_vla.py \
     --checkpoint logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt \
     --benchmark libero_spatial \
-    --task_ids 8 --num_episodes 1 --num_envs 1 \
+    --num_episodes 1 --num_envs 1 \
     --save_videos --output_dir ./eval_results
 
 
@@ -80,9 +80,16 @@ try:
     from libero.libero.utils.time_utils import Timer
     from libero.libero.utils.video_utils import VideoWriter
 except ImportError as e:
+    err = str(e)
     print(f"[错误] LIBERO 导入失败: {e}")
     print(f"  期望路径: {os.path.join(_project_root, 'dataset', 'LIBERO')}")
-    print("  请确保 dataset/LIBERO 目录存在且完整")
+    if "No module named" in err:
+        print("  若为缺少依赖，请安装 LIBERO 所需包，例如:")
+        print("    pip install bddl==1.0.1   # 若报 No module named 'bddl'")
+        print("    pip install robosuite==1.4.0   # 若报 No module named 'robosuite'")
+        print("  或一次性安装: pip install -r dataset/LIBERO/requirements.txt")
+    else:
+        print("  请确保 dataset/LIBERO 目录存在且完整")
     sys.exit(1)
 
 # -------------------------------------------------------------------
@@ -243,9 +250,9 @@ class VLAEvaluator:
         self,
         task_id: int,
         num_episodes: int = 10,
-        max_steps: int = 600,
-        num_envs: int = 20,
-        action_chunk_size: int = 1,
+        max_steps: int = 220,
+        num_envs: int = 1,
+        action_chunk_size: int = 8,
         save_videos: bool = False,
         video_folder: str = None,
         action_clip: bool = True,
@@ -371,6 +378,8 @@ class VLAEvaluator:
                         except (BrokenPipeError, EOFError, ConnectionResetError):
                             break
                         obs = [obs[i] for i in range(num_envs)]
+                        if ep == 0 and num_envs > 1:
+                            print(f"  [episode 0] warmup 完成，开始策略步进 (chunk={action_chunk_size})...", flush=True)
                         ep_success  = any(dones)  # warmup 中已有 env 成功则记为成功
                         steps       = 0
                         step_failed = False  # 若 env.step 子进程断开则置 True，跳出本 episode

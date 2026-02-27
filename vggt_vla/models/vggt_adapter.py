@@ -248,6 +248,9 @@ class VGGTAdapter(nn.Module):
                             pos = vision_pos
                     except Exception as e:
                         pos = None
+                # RoPE 需要整数索引 (F.embedding)；patch_positions 等可能是 float，统一转 long
+                if pos is not None and pos.dtype != torch.long:
+                    pos = pos.long()
                 
                 # 使用VGGT的alternating attention机制
                 # 参考 aggregator._process_frame_attention 和 _process_global_attention
@@ -338,15 +341,17 @@ class VGGTAdapter(nn.Module):
                 
         except Exception as e:
             import traceback
-            # 只在第一次错误时打印详细traceback，避免日志过多
-            if not hasattr(self, '_vggt_error_logged'):
+            import os
+            # 只在第一次错误时打印详细traceback，避免日志过多；DEBUG_VGGT=1 时每次都打
+            always_debug = os.environ.get("DEBUG_VGGT", "").strip() == "1"
+            if always_debug or not getattr(self, '_vggt_error_logged', False):
                 error_msg = f"Error in VGGT processing: {e}\n{traceback.format_exc()}"
                 print(f"Warning: {error_msg}")
                 print("Using simple concatenation fallback")
                 self._vggt_error_logged = True
             else:
-                # 后续错误只打印简短信息
-                print(f"Warning: VGGT processing error (using fallback): {type(e).__name__}")
+                # 后续错误仍带异常信息便于排查
+                print(f"Warning: VGGT processing error (using fallback): {type(e).__name__}: {e}")
             
             x = torch.cat([vision_adapted, language_enhanced], dim=1)
             x_projected = self.feature_projector(torch.cat([x, x], dim=-1))

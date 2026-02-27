@@ -1,0 +1,362 @@
+{
+  "benchmark": "libero_spatial",
+  "checkpoint": "/workspace/tingting/AtlasVLA/vggt_vla/../logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt",
+  "num_tasks": 10,
+  "num_episodes_per_task": 5,
+  "overall_success_rate": 0.02,
+  "total_success": 1,
+  "total_episodes": 50,
+  "timestamp": "2026-02-24T00:57:56.220193",
+  "results": {
+    "task_0": {
+      "task_id": 0,
+      "task_name": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 5340.656523178,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_1": {
+      "task_id": 1,
+      "task_name": "pick up the black bowl next to the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 5990.693171567,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_2": {
+      "task_id": 2,
+      "task_name": "pick up the black bowl from table center and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 4332.413887821,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_3": {
+      "task_id": 3,
+      "task_name": "pick up the black bowl on the cookie box and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3309.283791151,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_4": {
+      "task_id": 4,
+      "task_name": "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3236.006597842,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_5": {
+      "task_id": 5,
+      "task_name": "pick up the black bowl on the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3217.473348349,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_6": {
+      "task_id": 6,
+      "task_name": "pick up the black bowl next to the cookie box and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3196.948619641,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_7": {
+      "task_id": 7,
+      "task_name": "pick up the black bowl on the stove and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3265.255512203,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_8": {
+      "task_id": 8,
+      "task_name": "pick up the black bowl next to the plate and place it on the plate",
+      "num_success": 1,
+      "num_episodes": 5,
+      "success_rate": 0.2,
+      "elapsed_time": 3214.38976496,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": true,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    },
+    "task_9": {
+      "task_id": 9,
+      "task_name": "pick up the black bowl on the wooden cabinet and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 5,
+      "success_rate": 0.0,
+      "elapsed_time": 3168.850231306,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 3,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 4,
+          "success": false,
+          "steps": 96
+        }
+      ]
+    }
+  }
+}

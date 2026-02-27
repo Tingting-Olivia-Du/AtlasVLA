@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument('--freeze_vggt', action='store_true',
                        help='Freeze VGGT backbone')
     
-    parser.add_argument('--use_multi_view', default=None,
+    parser.add_argument('--use_multi_view', default='true',
                        help='Use dual view (agentview + wrist). Set in yaml: use_multi_view: true. Default: true')
     parser.add_argument('--no_multi_view', action='store_true',
                        help='禁用双视角(与 use_multi_view 冲突时以 no_multi_view 为准)')

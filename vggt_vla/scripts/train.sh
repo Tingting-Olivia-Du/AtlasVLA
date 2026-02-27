@@ -6,7 +6,7 @@
 #   ./vggt_vla/scripts/train.sh train_whole          # 即 configs/train_whole.yaml
 #   ./vggt_vla/scripts/train.sh train_whole.yaml     # 同上
 #   ./vggt_vla/scripts/train.sh ./configs/train_whole.yaml   # 显式路径
-#   ./vggt_vla/scripts/train.sh train_whole "0,1"    # 指定 GPU
+#   ./vggt_vla/scripts/train.sh train_whole 
 #   ./vggt_vla/scripts/train.sh train_whole "" --batch_size 8   # 覆盖参数
 #
 # 配置放在 vggt_vla/configs/ 下，例如: train_whole.yaml, train_simple.yaml
@@ -18,7 +18,7 @@ VGGT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIGS_DIR="${VGGT_ROOT}/configs"
 
 # 第一个参数：配置名或路径
-CONFIG_INPUT="${1:-train_simple}"
+CONFIG_INPUT="${2:-train_whole}"
 shift || true
 
 # 解析配置路径
