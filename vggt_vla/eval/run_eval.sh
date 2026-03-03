@@ -19,7 +19,11 @@ SAVE_VIDEOS=true
 OUTPUT_DIR="eval_results"   # 实际输出为 eval_results/<BENCHMARK>/（见下方）
 DEVICE="cuda"
 # 默认多卡；设为空则单卡（用 DEVICE）
-GPUS="3"
+GPUS="2"
+# 训练集式调试：仅用前 N 个 init state（留空=用全部）
+MAX_INIT_STATES="2"
+# 动作乘数（留空=1.0）；成功率 0 时可试 1.5 或 2.0
+ACTION_SCALE=""
 
 # 帮助信息
 usage() {
@@ -40,6 +44,8 @@ usage() {
     -d, --device DEVICE         计算设备，单卡时使用 (默认: cuda)，例: cuda:0
     -g, --gpus GPUS             多卡并行时使用的 GPU 编号，逗号分隔 (例: 0,1,2,3 或 2,5,7)
                                 指定后会把 -t 的任务按 GPU 数分片并行跑；未指定 -t 时请先指定 -t
+    -i, --max_init_states N     仅用每个任务前 N 个 init state（训练集式调试）
+    -a, --action_scale F        动作乘数（默认 1.0），可试 1.5 或 2.0 排查动作过小
     -h, --help                  显示本帮助信息
 
 示例:
@@ -54,6 +60,11 @@ usage() {
 
     # 评估单个任务，保存视频
     $0 -c logs/best_model.pt -b libero_spatial -t "0" -v
+
+    # 训练集式调试：只跑任务 0 1，每任务 2 回合，只用前 2 个 init，出视频（便于排查 0 成功率）
+    $0 -b libero_spatial -t "0 1" -n 2 -e 1 -i 2 -v
+    # 若成功率 0 可试放大动作：-a 1.5 或 -a 2.0
+    $0 -b libero_spatial -t "4 5" -n 2 -e 1 -i 2 -v -a 1.5
 EOF
     exit 1
 }
@@ -101,6 +112,14 @@ while [[ $# -gt 0 ]]; do
             GPUS="$2"
             shift 2
             ;;
+        -i|--max_init_states)
+            MAX_INIT_STATES="$2"
+            shift 2
+            ;;
+        -a|--action_scale)
+            ACTION_SCALE="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -135,11 +154,17 @@ cd "$PROJECT_DIR"
 
 # 不同 suite 存到不同子目录：eval_results/libero_spatial/、eval_results/libero_object/ 等
 OUTPUT_DIR="${OUTPUT_DIR}/${BENCHMARK}"
+# 训练集式（-i）时单独路径，避免与正式 test 结果混在一起
+[ -n "$MAX_INIT_STATES" ] && OUTPUT_DIR="${OUTPUT_DIR}/train_like"
 
 # 构建单次运行的基础命令。参数: $1=可选 output_dir，默认 OUTPUT_DIR
+# PYTHONUNBUFFERED=1 使 print 立即输出，便于看到 log
 base_cmd() {
     local out="${1:-$OUTPUT_DIR}"
-    echo "python $SCRIPT_DIR/eval_vla.py --checkpoint $CHECKPOINT --benchmark $BENCHMARK --num_episodes $NUM_EPISODES --max_steps $MAX_STEPS --num_envs $NUM_ENVS --output_dir $out"
+    local cmd="python -u $SCRIPT_DIR/eval_vla.py --checkpoint $CHECKPOINT --benchmark $BENCHMARK --num_episodes $NUM_EPISODES --max_steps $MAX_STEPS --num_envs $NUM_ENVS --output_dir $out"
+    [ -n "$MAX_INIT_STATES" ] && cmd="$cmd --max_init_states $MAX_INIT_STATES"
+    [ -n "$ACTION_SCALE" ] && cmd="$cmd --action_scale $ACTION_SCALE"
+    echo "$cmd"
 }
 
 # 多卡并行：按 GPU 分片任务，每卡使用独立输出子目录避免写同一文件
@@ -173,7 +198,7 @@ if [ -n "$GPUS" ]; then
         export CUDA_VISIBLE_DEVICES="$gpu_id"
         CMD="$(base_cmd "$out_dir") --task_ids $sub_tids --device cuda:0"
         [ "$SAVE_VIDEOS" = true ] && CMD="$CMD --save_videos"
-        echo "[GPU $gpu_id] 任务: $sub_tids 输出: $out_dir"
+        echo "[物理 GPU $gpu_id] 任务: $sub_tids 输出: $out_dir (进程内为 cuda:0)"
         $CMD &
         PIDS+=($!)
     done
@@ -211,6 +236,8 @@ echo "回合数: $NUM_EPISODES"
 echo "最大步数: $MAX_STEPS"
 echo "并行环境: $NUM_ENVS"
 echo "保存视频: $SAVE_VIDEOS"
+[ -n "$MAX_INIT_STATES" ] && echo "仅用前 N 个 init: $MAX_INIT_STATES"
+[ -n "$ACTION_SCALE" ] && echo "action_scale: $ACTION_SCALE"
 echo "输出目录: $OUTPUT_DIR"
 echo "设备: $DEVICE"
 echo "=========================================="

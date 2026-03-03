@@ -1,0 +1,87 @@
+{
+  "benchmark": "libero_spatial",
+  "checkpoint": "/workspace/tingting/AtlasVLA/logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt",
+  "num_tasks": 3,
+  "num_episodes_per_task": 3,
+  "overall_success_rate": 0.0,
+  "total_success": 0,
+  "total_episodes": 9,
+  "timestamp": "2026-03-02T08:09:09.627532",
+  "results": {
+    "task_0": {
+      "task_id": 0,
+      "task_name": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 3,
+      "success_rate": 0.0,
+      "elapsed_time": 112.934126759,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        }
+      ]
+    },
+    "task_1": {
+      "task_id": 1,
+      "task_name": "pick up the black bowl next to the ramekin and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 3,
+      "success_rate": 0.0,
+      "elapsed_time": 111.990710424,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        }
+      ]
+    },
+    "task_2": {
+      "task_id": 2,
+      "task_name": "pick up the black bowl from table center and place it on the plate",
+      "num_success": 0,
+      "num_episodes": 3,
+      "success_rate": 0.0,
+      "elapsed_time": 115.99995036,
+      "episode_results": [
+        {
+          "episode": 0,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 1,
+          "success": false,
+          "steps": 220
+        },
+        {
+          "episode": 2,
+          "success": false,
+          "steps": 220
+        }
+      ]
+    }
+  }
+}

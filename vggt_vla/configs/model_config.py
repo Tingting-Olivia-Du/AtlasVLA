@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional, Literal
+from dataclasses import dataclass, field
+from typing import Optional, Literal, List
 
 @dataclass
 class VisionConfig:
@@ -38,6 +38,18 @@ class VGGTConfig:
     # 是否使用 HuggingFace 的 facebook/vggt
     use_pretrained_vggt: bool = True  # True: 从HF加载, False: 使用简化实现
     freeze_vggt: bool = False  # 是否冻结VGGT参数
+
+    # LoRA for VGGT backbone (PEFT)
+    use_vggt_lora: bool = False
+    vggt_lora_rank: int = 8
+    vggt_lora_alpha: int = 16
+    vggt_lora_dropout: float = 0.05
+    vggt_lora_target_modules: List[str] = field(
+        default_factory=lambda: ["qkv", "proj", "fc1", "fc2"]
+    )
+    # 是否允许 VGGT forward 失败时静默降级到 fallback 路径。
+    # 建议默认 False，避免“看起来在训练但实际上结构已退化”。
+    allow_vggt_fallback: bool = False
     
     # Graph structure (用于简化版VGGT)
     graph_type: Literal['grid', 'knn', 'fully_connected'] = 'grid'
@@ -67,12 +79,20 @@ class ActionHeadConfig:
     use_spatial_features: bool = False
     use_tanh_output: bool = False  # 将输出约束到 [-1,1]，适合动作已归一化的环境
 
+    # Loss settings
+    loss_mse_weight: float = 0.5
+    loss_huber_weight: float = 0.5
+    loss_huber_delta: float = 1.0
+    loss_smooth_weight: float = 0.02
+    loss_gripper_weight: float = 2.0
+    loss_smooth_exclude_gripper: bool = True
+
 @dataclass
 class ModelConfig:
     """完整模型配置"""
-    vision: VisionConfig = VisionConfig()
-    language: LanguageConfig = LanguageConfig()
-    vggt: VGGTConfig = VGGTConfig()
-    action_head: ActionHeadConfig = ActionHeadConfig()
-    
+    vision: VisionConfig = field(default_factory=VisionConfig)
+    language: LanguageConfig = field(default_factory=LanguageConfig)
+    vggt: VGGTConfig = field(default_factory=VGGTConfig)
+    action_head: ActionHeadConfig = field(default_factory=ActionHeadConfig)
+
     hidden_dim: int = 768

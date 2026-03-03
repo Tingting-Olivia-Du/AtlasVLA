@@ -8,10 +8,40 @@ import os
 import sys
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 # 官方 VGGT-1B 权重 URL（与 vggt 仓库 demo 一致）
 VGGT_1B_WEIGHTS_URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+
+
+class LoRALinear(nn.Module):
+    """Minimal LoRA wrapper for nn.Linear."""
+
+    def __init__(self, base: nn.Linear, rank: int, alpha: int, dropout: float = 0.0):
+        super().__init__()
+        if rank <= 0:
+            raise ValueError(f"LoRA rank must be > 0, got {rank}")
+        self.base = base
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = float(alpha) / float(rank)
+        self.dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
+
+        # Freeze pretrained base weights.
+        self.base.weight.requires_grad = False
+        if self.base.bias is not None:
+            self.base.bias.requires_grad = False
+
+        in_features = base.in_features
+        out_features = base.out_features
+        self.lora_A = nn.Linear(in_features, rank, bias=False)
+        self.lora_B = nn.Linear(rank, out_features, bias=False)
+
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=5 ** 0.5)
+        nn.init.zeros_(self.lora_B.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base(x) + self.lora_B(self.lora_A(self.dropout(x))) * self.scaling
 
 
 def _get_vggt_module():
@@ -69,6 +99,19 @@ class VGGTAdapter(nn.Module):
         except Exception as e:
             print(f"⚠ Could not load official weights: {e}")
             print("  Using VGGT structure with random initialization (no pretrained weights).")
+
+        # Optional LoRA injection for VGGT backbone.
+        if getattr(config, "use_vggt_lora", False):
+            print("\n  🎯 Enabling VGGT LoRA finetuning...")
+            for p in self.vggt.parameters():
+                p.requires_grad = False
+            replaced = self._inject_lora_into_vggt(
+                rank=getattr(config, "vggt_lora_rank", 8),
+                alpha=getattr(config, "vggt_lora_alpha", 16),
+                dropout=getattr(config, "vggt_lora_dropout", 0.05),
+                target_modules=getattr(config, "vggt_lora_target_modules", ["qkv", "proj", "fc1", "fc2"]),
+            )
+            print(f"  ✓ LoRA injected into {replaced} Linear layers")
 
         # 检查 aggregator（本 adapter 只使用这部分）
         if hasattr(self.vggt, 'aggregator'):
@@ -137,7 +180,10 @@ class VGGTAdapter(nn.Module):
         print(f"  Action queries: {self.num_action_queries} learnable tokens")
         
         # 冻结VGGT backbone (可选)
-        if config.freeze_vggt:
+        if getattr(config, "use_vggt_lora", False):
+            trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            print(f"  ✓ Trainable parameters: {trainable / 1e6:.2f}M (LoRA + adapter layers)")
+        elif config.freeze_vggt:
             print("\n  🔒 Freezing VGGT backbone...")
             for param in self.vggt.parameters():
                 param.requires_grad = False
@@ -148,6 +194,28 @@ class VGGTAdapter(nn.Module):
             print(f"  Trainable parameters: {trainable / 1e6:.2f}M (full model)")
         
         print("="*60 + "\n")
+
+    def _inject_lora_into_vggt(
+        self,
+        rank: int,
+        alpha: int,
+        dropout: float,
+        target_modules: List[str],
+    ) -> int:
+        target = set(target_modules)
+        replaced = 0
+
+        def _replace(module: nn.Module):
+            nonlocal replaced
+            for name, child in list(module.named_children()):
+                if isinstance(child, nn.Linear) and name in target:
+                    setattr(module, name, LoRALinear(child, rank=rank, alpha=alpha, dropout=dropout))
+                    replaced += 1
+                else:
+                    _replace(child)
+
+        _replace(self.vggt)
+        return replaced
     
     def forward(
         self,
@@ -342,6 +410,12 @@ class VGGTAdapter(nn.Module):
         except Exception as e:
             import traceback
             import os
+            allow_fallback = bool(getattr(self.config, "allow_vggt_fallback", False))
+            if not allow_fallback:
+                raise RuntimeError(
+                    "VGGT processing failed and allow_vggt_fallback=False. "
+                    "Set allow_vggt_fallback=true only for debugging."
+                ) from e
             # 只在第一次错误时打印详细traceback，避免日志过多；DEBUG_VGGT=1 时每次都打
             always_debug = os.environ.get("DEBUG_VGGT", "").strip() == "1"
             if always_debug or not getattr(self, '_vggt_error_logged', False):

@@ -121,32 +121,45 @@ class VLAModel(nn.Module):
             return actions
     
     def get_param_groups(self, learning_rate: float, weight_decay: float):
-        vision_params = list(self.vision_encoder.parameters())
-        language_proj_params = list(self.language_encoder.projector.parameters())
-        backbone_params = list(self.vggt_backbone.parameters())
-        action_params = list(self.action_head.parameters())
-        
-        param_groups = [
-            {
+        def _trainable(params):
+            return [p for p in params if p.requires_grad]
+
+        vision_params = _trainable(self.vision_encoder.parameters())
+        language_model_params = _trainable(self.language_encoder.language_model.parameters())
+        language_proj_params = _trainable(self.language_encoder.projector.parameters())
+        backbone_params = _trainable(self.vggt_backbone.parameters())
+        action_params = _trainable(self.action_head.parameters())
+
+        param_groups = []
+        if vision_params:
+            param_groups.append({
                 'params': vision_params,
                 'lr': learning_rate,
                 'weight_decay': weight_decay
-            },
-            {
+            })
+        if language_model_params:
+            # LM backbone uses conservative LR to reduce forgetting.
+            param_groups.append({
+                'params': language_model_params,
+                'lr': learning_rate * 0.05,
+                'weight_decay': weight_decay
+            })
+        if language_proj_params:
+            param_groups.append({
                 'params': language_proj_params,
                 'lr': learning_rate * 0.1,
                 'weight_decay': weight_decay
-            },
-            {
+            })
+        if backbone_params:
+            param_groups.append({
                 'params': backbone_params,
                 'lr': learning_rate,
                 'weight_decay': weight_decay
-            },
-            {
+            })
+        if action_params:
+            param_groups.append({
                 'params': action_params,
                 'lr': learning_rate * 2,
                 'weight_decay': weight_decay * 0.1
-            }
-        ]
-        
+            })
         return param_groups

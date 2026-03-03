@@ -124,6 +124,19 @@ def _safe_torch_load(path, map_location=None, **kwargs):
         return torch.load(path, map_location=map_location, **kwargs)
 
 
+def _get_wrist_view_from_obs(single_obs):
+    """Best-effort wrist camera lookup across common LIBERO keys."""
+    wrist_keys = [
+        "robot0_eye_in_hand_image",
+        "wrist_image",
+        "agentview_wrist_image",
+    ]
+    for k in wrist_keys:
+        if k in single_obs and single_obs[k] is not None:
+            return single_obs[k]
+    return None
+
+
 # -------------------------------------------------------------------
 # VLAEvaluator
 # -------------------------------------------------------------------
@@ -158,7 +171,11 @@ class VLAEvaluator:
         print("=" * 60)
         print(f"  Checkpoint : {checkpoint_path}")
         print(f"  Benchmark  : {benchmark_name}")
-        print(f"  Device     : {device}")
+        _phys = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        if _phys and device.startswith("cuda"):
+            print(f"  Device     : {device} (物理 GPU: {_phys})")
+        else:
+            print(f"  Device     : {device}")
 
         self._load_model()
         self._load_benchmark()
@@ -200,7 +217,16 @@ class VLAEvaluator:
         total = sum(p.numel() for p in self.model.parameters())
         print(f"  ✓ 加载完成 | 参数量: {total/1e6:.1f}M")
         print(f"  图像归一化: mean={IMG_MEAN}  std={IMG_STD}")
-        print(f"  Action 归一化: 无（与训练一致）")
+        ah = self.model.action_head
+        if hasattr(ah, "action_mean") and hasattr(ah, "action_std"):
+            mean_np = ah.action_mean.cpu().numpy()
+            std_np = ah.action_std.cpu().numpy()
+            if (std_np != 1.0).any() or (mean_np != 0.0).any():
+                print(f"  Action 反归一化: 使用 checkpoint 内 mean/std (推理时 head 输出 * std + mean)")
+            else:
+                print(f"  Action: 未使用数据统计 (mean≈0, std≈1)，直接输出")
+        else:
+            print(f"  Action: head 无 action_mean/action_std，直接输出")
 
     def _load_benchmark(self):
         print("\n[2/3] 加载 LIBERO 基准 ...")
@@ -232,11 +258,8 @@ class VLAEvaluator:
             self.bddl_dir        = get_libero_path("bddl_files")
             self.init_states_dir = get_libero_path("init_states")
 
-        # datasets 仍从 config.yaml 读（存放 HDF5 数据集）
-        try:
-            self.datasets_dir = get_libero_path("datasets")
-        except Exception:
-            self.datasets_dir = os.path.join(_project_root, "dataset", "LIBERO", "datasets")
+        # datasets 固定用本项目路径，不读 ~/.libero/config.yaml，避免其他项目的路径导致 Warning
+        self.datasets_dir = os.path.join(_project_root, "dataset", "LIBERO", "datasets")
 
         print(f"  datasets   : {self.datasets_dir}")
         print(f"  bddl_files : {self.bddl_dir}")
@@ -258,14 +281,15 @@ class VLAEvaluator:
         action_clip: bool = True,
         action_scale: float = 1.0,
         debug_action_stats: bool = False,
+        max_init_states: int = None,
+        use_multi_view: bool = True,
     ) -> dict:
         """
         评估单个 LIBERO 任务。
 
         图像流程:
-            LIBERO obs["agentview_image"] (H,W,3 uint8 RGB)
-            → ToPILImage → Resize(224) → ToTensor → Normalize(ImageNet)
-            → 模型输入 (N, 3, 224, 224)
+            默认双视角: agentview + wrist，模型输入 (N, 2, 3, 224, 224)
+            若 wrist 缺失则回退为复制 agentview，保证与训练 use_multi_view=True 一致。
 
         Action 流程:
             模型输出 (N, horizon, 7) 为 delta（与训练数据、OSC_POSE 一致）
@@ -282,14 +306,14 @@ class VLAEvaluator:
         print(f"\n{'='*60}")
         print(f"Task {task_id}: {task_name}")
         print(f"  回合数={num_episodes}  最大步={max_steps}  并行环境={num_envs}  chunk={action_chunk_size}")
-        print(f"  action_clip={action_clip}  action_scale={action_scale}")
+        print(f"  action_clip={action_clip}  action_scale={action_scale}  multi_view={use_multi_view}")
         print(f"{'='*60}")
 
         env_args = {
             "bddl_file_name": os.path.join(
                 self.bddl_dir, task.problem_folder, task.bddl_file
             ),
-            "camera_heights": 256,  # 与训练数据（HF lerobot/libero_spatial_image）一致
+            "camera_heights": 256,  # 与训练数据（HF mage）一致
             "camera_widths":  256,
         }
 
@@ -298,6 +322,9 @@ class VLAEvaluator:
         )
         init_states = _safe_torch_load(init_states_path)
         num_init    = init_states.shape[0]
+        if max_init_states is not None and max_init_states > 0:
+            num_init = min(num_init, max_init_states)
+            print(f"  [训练集式] 仅用前 {num_init} 个 init state")
 
         # num_envs==1 时用 DummyVectorEnv 避免子进程 BrokenPipeError（与 dataset/LIBERO/libero/lifelong/metric.py 一致）
         if num_envs == 1:
@@ -393,11 +420,20 @@ class VLAEvaluator:
 
                         while steps < max_steps:
                             # ---- 图像预处理 ----
-                            imgs = [
-                                _img_transform(single_obs["agentview_image"])
-                                for single_obs in obs
-                            ]
-                            images = torch.stack(imgs, dim=0).to(self.device)
+                            if use_multi_view:
+                                imgs = []
+                                for single_obs in obs:
+                                    agent_img = _img_transform(single_obs["agentview_image"])
+                                    wrist_raw = _get_wrist_view_from_obs(single_obs)
+                                    wrist_img = _img_transform(wrist_raw) if wrist_raw is not None else agent_img
+                                    imgs.append(torch.stack([agent_img, wrist_img], dim=0))
+                                images = torch.stack(imgs, dim=0).to(self.device)
+                            else:
+                                imgs = [
+                                    _img_transform(single_obs["agentview_image"])
+                                    for single_obs in obs
+                                ]
+                                images = torch.stack(imgs, dim=0).to(self.device)
 
                             # ---- 模型推断（一次推断，连续执行多步 = action chunking）----
                             instructions = [task_name] * num_envs
@@ -528,6 +564,8 @@ class VLAEvaluator:
         action_clip: bool = True,
         action_scale: float = 1.0,
         debug_action_stats: bool = False,
+        max_init_states: int = None,
+        use_multi_view: bool = True,
     ) -> dict:
         if task_ids is None:
             task_ids = list(range(len(self.benchmark.get_task_names())))
@@ -564,6 +602,8 @@ class VLAEvaluator:
                 action_clip=action_clip,
                 action_scale=action_scale,
                 debug_action_stats=debug_action_stats,
+                max_init_states=max_init_states,
+                use_multi_view=use_multi_view,
             )
             all_results[f"task_{task_id}"] = result
             total_success  += result["num_success"]
@@ -663,6 +703,10 @@ def parse_args():
                         help="action 乘数，例如 1.5 放大动作幅度（默认 1.0）")
     parser.add_argument("--debug_action_stats", action="store_true",
                         help="打印第 1 步 action 的 min/max/mean/std 便于排查")
+    parser.add_argument("--max_init_states", type=int, default=None,
+                        help="仅用每个任务前 N 个 init state（训练集式调试，如 2 表示只用前 2 个）")
+    parser.add_argument("--no_multi_view", action="store_true",
+                        help="禁用双视角输入（默认启用 agentview+wrist 双视角）")
     return parser.parse_args()
 
 
@@ -690,6 +734,8 @@ def main():
     action_clip  = False if args.no_action_clip else yaml_cfg.get("action_clip", True)
     action_scale = _get(args.action_scale, "action_scale", 1.0)
     debug_action_stats = getattr(args, "debug_action_stats", False) or yaml_cfg.get("debug_action_stats", False)
+    max_init_states = _get(args.max_init_states, "max_init_states", None)
+    use_multi_view = not getattr(args, "no_multi_view", False)
 
     evaluator = VLAEvaluator(
         checkpoint_path=checkpoint,
@@ -707,6 +753,8 @@ def main():
         action_clip=action_clip,
         action_scale=action_scale,
         debug_action_stats=debug_action_stats,
+        max_init_states=max_init_states,
+        use_multi_view=use_multi_view,
     )
 
 

@@ -218,7 +218,8 @@ class LIBEROHFDataset(Dataset):
             'instruction': language,
             'actions': actions,
             'timestep': timestep,
-            'episode_length': episode_info['length']
+            'episode_length': episode_info['length'],
+            'episode_idx': episode_idx,
         }
         
         # 可选: 添加state信息
@@ -283,6 +284,57 @@ def compute_action_stats_from_hf_dataset(
     return {"mean": mean, "std": std}
 
 
+def compute_action_stats_from_episodes(
+    hf_dataset,
+    episodes: List[Dict],
+    action_key: str = "action",
+    action_dim: int = 7,
+    max_samples: Optional[int] = 20000,
+    verbose: bool = True,
+) -> Optional[Dict[str, np.ndarray]]:
+    """
+    仅基于训练 episodes 统计 action 的 mean/std，避免 train/val 信息泄漏。
+    """
+    if not episodes:
+        if verbose:
+            print("  Warning: no train episodes for action stats, skipping action normalization.")
+        return None
+
+    indices = []
+    for ep in episodes:
+        indices.extend(ep.get("indices", []))
+    if not indices:
+        if verbose:
+            print("  Warning: no train indices for action stats, skipping action normalization.")
+        return None
+
+    if max_samples and len(indices) > max_samples:
+        rng = np.random.default_rng(42)
+        choose = rng.choice(len(indices), size=max_samples, replace=False)
+        indices = [indices[i] for i in choose]
+
+    actions = []
+    for idx in indices:
+        row = hf_dataset[idx]
+        a = row.get(action_key)
+        if a is None:
+            continue
+        a = np.asarray(a, dtype=np.float64).flatten()
+        if a.size >= action_dim:
+            actions.append(a[:action_dim])
+    if len(actions) < 2:
+        if verbose:
+            print("  Warning: not enough train actions for stats, skipping action normalization.")
+        return None
+
+    actions = np.stack(actions)
+    mean = np.ascontiguousarray(actions.mean(axis=0), dtype=np.float64)
+    std = np.ascontiguousarray(np.maximum(actions.std(axis=0), 1e-6), dtype=np.float64)
+    if verbose:
+        print(f"  Train-only action stats from {len(actions)} samples: mean shape {mean.shape}, std min={std.min():.4f}")
+    return {"mean": mean, "std": std}
+
+
 def get_libero_hf_dataloaders(
     repo_id: str = "lerobot/libero_spatial_image",
     task_names: Optional[List[str]] = None,
@@ -294,6 +346,7 @@ def get_libero_hf_dataloaders(
     action_horizon: int = 10,
     action_dim: int = 7,
     train_split_ratio: float = 0.9,
+    split_seed: Optional[int] = None,
     cache_dir: Optional[str] = None,
     use_multi_view: bool = True,
     distributed: bool = False,
@@ -315,8 +368,12 @@ def get_libero_hf_dataloaders(
         num_workers: 数据加载的worker数量
         action_horizon: 动作预测的时间跨度
         train_split_ratio: 训练集比例
+        split_seed: 若给定，则用该 seed 固定 episode 划分，保证训练集/验证集可复现（与 eval 训练集一致）
         cache_dir: HuggingFace缓存目录
     """
+
+    # 按 episode 划分时使用固定 seed，便于「在训练集上 eval」复现同一批样本
+    rng = np.random.default_rng(split_seed) if split_seed is not None else np.random
     
     # 数据增强
     train_transform = transforms.Compose([
@@ -326,20 +383,12 @@ def get_libero_hf_dataloaders(
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.RandomRotation(5),
         transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
     ])
     
     val_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
     ])
     
     is_main = (rank == 0)
@@ -358,9 +407,9 @@ def get_libero_hf_dataloaders(
         verbose=is_main
     )
 
-    # 按 episode 分割训练集和验证集
+    # 按 episode 分割训练集和验证集（split_seed 存在时可复现）
     num_episodes = len(full_dataset.episodes)
-    indices = np.random.permutation(num_episodes)
+    indices = rng.permutation(num_episodes)
     split_idx = int(num_episodes * train_split_ratio)
     train_episodes = [full_dataset.episodes[i] for i in indices[:split_idx]]
     val_episodes = [full_dataset.episodes[i] for i in indices[split_idx:]]
@@ -406,8 +455,9 @@ def get_libero_hf_dataloaders(
 
     action_stats = None
     if compute_action_stats and is_main:
-        action_stats = compute_action_stats_from_hf_dataset(
+        action_stats = compute_action_stats_from_episodes(
             full_dataset.dataset,
+            train_episodes,
             action_key="action",
             action_dim=action_dim,
             max_samples=action_stats_max_samples,
@@ -443,3 +493,63 @@ def get_libero_hf_dataloaders(
     )
 
     return train_loader, val_loader, action_stats
+
+
+def get_libero_train_dataset(
+    repo_id: str = "lerobot/libero_spatial_image",
+    task_names: Optional[List[str]] = None,
+    task_indices: Optional[List[int]] = None,
+    max_episodes: Optional[int] = None,
+    max_samples: Optional[int] = None,
+    action_horizon: int = 10,
+    train_split_ratio: float = 0.9,
+    split_seed: int = 42,
+    cache_dir: Optional[str] = None,
+    use_multi_view: bool = True,
+    verbose: bool = True,
+) -> LIBEROHFDataset:
+    """
+    获取与训练脚本一致的「训练集」Dataset（用于在训练集上做离线 eval）。
+    与 get_libero_hf_dataloaders 使用相同的数据源与划分逻辑；split_seed 固定后得到同一批 train episodes。
+    """
+    val_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    rng = np.random.default_rng(split_seed)
+    full_dataset = LIBEROHFDataset(
+        repo_id=repo_id,
+        split="train",
+        task_names=task_names,
+        task_indices=task_indices,
+        max_episodes=max_episodes,
+        max_samples=max_samples,
+        transform=None,
+        action_horizon=action_horizon,
+        use_multi_view=use_multi_view,
+        cache_dir=cache_dir,
+        verbose=verbose,
+    )
+    num_episodes = len(full_dataset.episodes)
+    indices = rng.permutation(num_episodes)
+    split_idx = int(num_episodes * train_split_ratio)
+    train_episodes = [full_dataset.episodes[i] for i in indices[:split_idx]]
+    train_dataset = LIBEROHFDataset(
+        repo_id=repo_id,
+        split="train",
+        task_names=task_names,
+        task_indices=task_indices,
+        max_episodes=max_episodes,
+        max_samples=max_samples,
+        transform=val_transform,
+        action_horizon=action_horizon,
+        use_multi_view=use_multi_view,
+        cache_dir=cache_dir,
+        verbose=verbose,
+        _hf_dataset=full_dataset.dataset,
+        _episodes=train_episodes,
+    )
+    if verbose:
+        print(f"  Train set (for eval): {len(train_dataset)} samples from {len(train_episodes)} episodes (split_seed={split_seed})")
+    return train_dataset

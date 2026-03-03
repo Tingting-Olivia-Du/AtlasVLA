@@ -25,6 +25,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
 import yaml
+import math
 from pathlib import Path
 from dataclasses import asdict
 
@@ -61,6 +62,10 @@ def parse_args():
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--grad_clip', type=float, default=1.0)
+    parser.add_argument('--warmup_steps', type=int, default=0,
+                       help='Linear warmup steps for step-level scheduler (0 disables warmup)')
+    parser.add_argument('--min_lr_ratio', type=float, default=0.01,
+                       help='Minimum LR ratio for cosine decay after warmup')
     
     # Model Architecture
     parser.add_argument('--use_vision_tower', action='store_true',
@@ -81,6 +86,19 @@ def parse_args():
                        help='Use facebook/VGGT-1B from HuggingFace')
     parser.add_argument('--freeze_vggt', action='store_true',
                        help='Freeze VGGT backbone')
+    parser.add_argument('--use_vggt_lora', action='store_true',
+                       help='Enable LoRA finetuning on VGGT backbone')
+    parser.add_argument('--vggt_lora_rank', type=int, default=8,
+                       help='LoRA rank for VGGT')
+    parser.add_argument('--vggt_lora_alpha', type=int, default=16,
+                       help='LoRA alpha for VGGT')
+    parser.add_argument('--vggt_lora_dropout', type=float, default=0.05,
+                       help='LoRA dropout for VGGT')
+    parser.add_argument('--vggt_lora_target_modules', nargs='+',
+                       default=['qkv', 'proj', 'fc1', 'fc2'],
+                       help='VGGT module names to apply LoRA (e.g. qkv proj fc1 fc2)')
+    parser.add_argument('--allow_vggt_fallback', action='store_true',
+                       help='Allow silent fallback path when VGGT forward fails (not recommended for production training)')
     
     parser.add_argument('--use_multi_view', default='true',
                        help='Use dual view (agentview + wrist). Set in yaml: use_multi_view: true. Default: true')
@@ -90,6 +108,19 @@ def parse_args():
                        help='Action prediction horizon')
     parser.add_argument('--action_dim', type=int, default=7,
                        help='Action dimension')
+    parser.add_argument('--loss_mse_weight', type=float, default=0.5,
+                       help='Weight of MSE term in action loss')
+    parser.add_argument('--loss_huber_weight', type=float, default=0.5,
+                       help='Weight of Huber term in action loss')
+    parser.add_argument('--loss_huber_delta', type=float, default=1.0,
+                       help='Delta for Huber loss')
+    parser.add_argument('--loss_smooth_weight', type=float, default=0.02,
+                       help='Weight of temporal smoothness term')
+    parser.add_argument('--loss_gripper_weight', type=float, default=2.0,
+                       help='Extra weight for gripper dimension in action loss')
+    parser.add_argument('--loss_smooth_exclude_gripper', type=lambda x: str(x).lower() in ('1', 'true', 'yes'),
+                       default=True,
+                       help='Exclude gripper dim from smoothness term (true/false)')
     
     # Logging
     parser.add_argument('--log_dir', type=str, default='./logs',
@@ -104,12 +135,32 @@ def parse_args():
                        help='Only save best model every N steps (default: every epoch when val improves)')
     parser.add_argument('--use_wandb', action='store_true',
                        help='Use Weights & Biases for logging')
-    parser.add_argument('--wandb_entity', type=str, default=None,
+    parser.add_argument('--wandb_entity', type=str, default="tingtingdu06-uw-madison",
                        help='W&B entity (your username or team), e.g. tingtingdu06-uw-madison')
     parser.add_argument('--wandb_project', type=str, default='vla-vggt',
                        help='W&B project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
                        help='W&B run name (default: exp_name)')
+
+    # Periodic online eval hook (small LIBERO sim eval during training)
+    parser.add_argument('--online_eval_every_steps', type=int, default=5000,
+                       help='Run small online eval every N steps (0/None to disable)')
+    parser.add_argument('--online_eval_benchmark', type=str, default='libero_spatial',
+                       help='LIBERO benchmark for online eval hook')
+    parser.add_argument('--online_eval_task_ids', type=int, nargs='+', default=[0, 1, 2],
+                       help='Task IDs used by online eval hook')
+    parser.add_argument('--online_eval_num_episodes', type=int, default=2,
+                       help='Episodes per task in online eval hook')
+    parser.add_argument('--online_eval_max_steps', type=int, default=220,
+                       help='Max rollout steps in online eval hook')
+    parser.add_argument('--online_eval_num_envs', type=int, default=1,
+                       help='Parallel env count in online eval hook')
+    parser.add_argument('--online_eval_action_chunk_size', type=int, default=8,
+                       help='Action chunk size in online eval hook')
+    parser.add_argument('--online_eval_max_init_states', type=int, default=2,
+                       help='Limit init states per task in online eval hook')
+    parser.add_argument('--online_eval_save_videos', action='store_true',
+                       help='Save videos during online eval hook')
     
     # System
     parser.add_argument('--device', type=str, default='cuda',
@@ -119,7 +170,7 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
     
-    # Config file (overrides command line args)
+    # Config file (used as defaults; explicit CLI args should take priority)
     parser.add_argument('--config', type=str, default=None,
                        help='Path to YAML config file')
     
@@ -133,15 +184,21 @@ def parse_args():
     
     args = parser.parse_args()
     
-    # Load config file if provided
+    # Load config file if provided.
+    # Priority rule:
+    #   explicit CLI arg > YAML config > parser default
     if args.config is not None:
         with open(args.config, 'r') as f:
             config_dict = yaml.safe_load(f)
         
-        # Update args with config file
+        # Update args with config values only when user did not explicitly
+        # override that argument on the command line.
         for key, value in config_dict.items():
             if hasattr(args, key):
-                setattr(args, key, value)
+                current_value = getattr(args, key)
+                default_value = parser.get_default(key)
+                if current_value == default_value:
+                    setattr(args, key, value)
     
     return args
 
@@ -176,6 +233,12 @@ def build_config(args):
         mlp_ratio=4.0,
         use_pretrained_vggt=args.use_pretrained_vggt,
         freeze_vggt=args.freeze_vggt,
+        use_vggt_lora=getattr(args, 'use_vggt_lora', False),
+        vggt_lora_rank=getattr(args, 'vggt_lora_rank', 8),
+        vggt_lora_alpha=getattr(args, 'vggt_lora_alpha', 16),
+        vggt_lora_dropout=getattr(args, 'vggt_lora_dropout', 0.05),
+        vggt_lora_target_modules=getattr(args, 'vggt_lora_target_modules', ['qkv', 'proj', 'fc1', 'fc2']),
+        allow_vggt_fallback=getattr(args, 'allow_vggt_fallback', False),
         graph_type='grid',
         fusion_strategy='concat'
     )
@@ -189,7 +252,13 @@ def build_config(args):
         num_hidden_layers=2,
         dropout=0.1,
         use_action_chunking=True,
-        use_spatial_features=False
+        use_spatial_features=False,
+        loss_mse_weight=getattr(args, 'loss_mse_weight', 0.5),
+        loss_huber_weight=getattr(args, 'loss_huber_weight', 0.5),
+        loss_huber_delta=getattr(args, 'loss_huber_delta', 1.0),
+        loss_smooth_weight=getattr(args, 'loss_smooth_weight', 0.02),
+        loss_gripper_weight=getattr(args, 'loss_gripper_weight', 2.0),
+        loss_smooth_exclude_gripper=getattr(args, 'loss_smooth_exclude_gripper', True),
     )
     
     # Full Model Config
@@ -337,6 +406,7 @@ def main_worker(rank: int, world_size: int, args):
         use_multi_view = False
     if rank == 0:
         print(f"  Multi-view (agentview + wrist): {use_multi_view}")
+    # split_seed=42 固定 train/val 划分，便于后续在「训练集上」做离线 eval 时复现同一批样本
     train_loader, val_loader, action_stats = get_libero_hf_dataloaders(
         repo_id=args.dataset_repo,
         task_names=args.task_names,
@@ -347,6 +417,8 @@ def main_worker(rank: int, world_size: int, args):
         num_workers=args.num_workers,
         action_horizon=args.action_horizon,
         action_dim=config.action_head.action_dim,
+        train_split_ratio=getattr(args, 'train_split_ratio', 0.9),
+        split_seed=getattr(args, 'split_seed', 42),
         cache_dir=args.cache_dir,
         use_multi_view=use_multi_view,
         distributed=distributed,
@@ -388,11 +460,38 @@ def main_worker(rank: int, world_size: int, args):
     optimizer = torch.optim.AdamW(param_groups)
 
     # Create scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args.num_epochs,
-        eta_min=args.lr * 0.01
-    )
+    # - warmup_steps > 0: step-level linear warmup + cosine decay
+    # - warmup_steps == 0: keep legacy epoch-level cosine schedule
+    scheduler_step_per_batch = False
+    if getattr(args, 'warmup_steps', 0) and int(args.warmup_steps) > 0:
+        scheduler_step_per_batch = True
+        total_train_steps = int(args.max_steps) if args.max_steps else int(args.num_epochs) * len(train_loader)
+        warmup_steps = int(args.warmup_steps)
+        min_lr_ratio = float(getattr(args, 'min_lr_ratio', 0.01))
+        if total_train_steps <= 0:
+            total_train_steps = 1
+        if warmup_steps >= total_train_steps:
+            warmup_steps = max(1, total_train_steps - 1)
+
+        def lr_lambda(current_step: int):
+            if current_step < warmup_steps:
+                return float(current_step + 1) / float(max(1, warmup_steps))
+            progress = float(current_step - warmup_steps) / float(max(1, total_train_steps - warmup_steps))
+            progress = min(max(progress, 0.0), 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        if rank == 0:
+            print(f"  Scheduler: Warmup+Cosine (step-level), warmup_steps={warmup_steps}, total_steps={total_train_steps}, min_lr_ratio={min_lr_ratio}")
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.num_epochs,
+            eta_min=args.lr * 0.01
+        )
+        if rank == 0:
+            print(f"  Scheduler: CosineAnnealingLR (epoch-level), T_max={args.num_epochs}, eta_min={args.lr * 0.01:g}")
 
     # 构建数据集名称用于 checkpoint 命名
     dataset_name = args.dataset_repo.split('/')[-1]  # 例如 "lerobot/libero_spatial_image" -> "libero_spatial_image"
@@ -436,6 +535,18 @@ def main_worker(rank: int, world_size: int, args):
         wandb_run_id=wandb_run_id,
         action_mean=action_mean,
         action_std=action_std,
+        online_eval_every_steps=getattr(args, 'online_eval_every_steps', None),
+        online_eval_benchmark=getattr(args, 'online_eval_benchmark', 'libero_spatial'),
+        online_eval_task_ids=getattr(args, 'online_eval_task_ids', [0, 1, 2]),
+        online_eval_num_episodes=getattr(args, 'online_eval_num_episodes', 2),
+        online_eval_max_steps=getattr(args, 'online_eval_max_steps', 220),
+        online_eval_num_envs=getattr(args, 'online_eval_num_envs', 1),
+        online_eval_action_chunk_size=getattr(args, 'online_eval_action_chunk_size', 8),
+        online_eval_max_init_states=getattr(args, 'online_eval_max_init_states', 2),
+        online_eval_save_videos=getattr(args, 'online_eval_save_videos', False),
+        online_eval_use_multi_view=use_multi_view,
+        online_eval_device=str(device),
+        scheduler_step_per_batch=scheduler_step_per_batch,
     )
 
     # Load full checkpoint (model, optimizer, scheduler) when resuming
@@ -463,6 +574,7 @@ def main_worker(rank: int, world_size: int, args):
 
 def main():
     args = parse_args()
+    print(f"[Args] resolved gpus={args.gpus!r}, config={args.config!r}")
 
     # 解析 GPU 列表: --gpus "0,1,2,3" 指定多卡; null/未设置则使用全部可见 GPU
     if args.gpus is not None and str(args.gpus).strip():

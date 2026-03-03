@@ -11,6 +11,8 @@
 #
 # 配置放在 vggt_vla/configs/ 下，例如: train_whole.yaml, train_simple.yaml
 
+# ./vggt_vla/scripts/train.sh train_vla "0,1,2,3"
+
 set -e
 
 # 脚本所在目录的上级 = vggt_vla
@@ -18,7 +20,7 @@ VGGT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIGS_DIR="${VGGT_ROOT}/configs"
 
 # 第一个参数：配置名或路径
-CONFIG_INPUT="${2:-train_whole}"
+CONFIG_INPUT="${1:-train_whole}"
 shift || true
 
 # 解析配置路径

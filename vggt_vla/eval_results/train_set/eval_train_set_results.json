@@ -1,0 +1,13 @@
+{
+  "checkpoint": "/workspace/tingting/AtlasVLA/logs/vla_libero_spatial/best_model_libero_spatial_image_20260214_045544_epoch297_step26690_loss0.0017.pt",
+  "dataset_repo": "lerobot/libero_spatial_image",
+  "split_seed": 42,
+  "n_samples": 500,
+  "mse_first_step_mean": 0.0016910069389268756,
+  "mse_first_step_std": 0.0018157290760427713,
+  "mse_first_step_median": 0.0011498605599626899,
+  "mse_horizon_mean": 0.0011994063388556242,
+  "mse_horizon_std": 0.0007376753492280841,
+  "mse_horizon_median": 0.0009839388076215982,
+  "timestamp": "2026-03-02T07:48:22.854802"
+}
